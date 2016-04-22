@@ -1,0 +1,4 @@
+# jquery sources are missing for some playground examples
+# (see src/compiler/crystal/tools/playground/)
+crystal: source-is-missing
+

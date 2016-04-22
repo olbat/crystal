@@ -1,0 +1,47 @@
+Source: crystal
+Section: devel
+Priority: optional
+# FIXME: to be changed with the DM's name
+Maintainer: John Doe <john@example.org>
+Build-Depends: debhelper (>= 9),
+               git-buildpackage,
+               git-core,
+               llvm-3.6-dev | llvm-3.5-dev,
+               libllvm3.6 | libllvm3.6v5 | libllvm3.5 | libllvm3.5v5,
+               libgc-dev (>= 1:7.4),
+               libbsd-dev,
+               libedit-dev,
+               libevent-dev,
+               libgmp-dev,
+               zlib1g-dev,
+               libxml2-dev,
+               libssl-dev,
+               libyaml-dev,
+               libreadline-dev,
+               libpcre3-dev,
+               crystal
+# FIXME: find how handle the build-dep to "crystal" properly.
+#
+# Note: The upstream package can be downloaded using APT:
+#      repo: http://dist.crystal-lang.org/apt, suite: crystal, component: main,
+#      GnuPG key server: hkp://keys.gnupg.net, GnuPG key ID: 09617FD37CC06B54
+#      (see http://crystal-lang.org/docs/installation/on_debian_and_ubuntu.html)
+Standards-Version: 3.9.7
+Homepage: http://crystal-lang.org/
+Vcs-Git: https://github.com/crystal-lang/crystal
+Vcs-Browser: https://github.com/crystal-lang/crystal
+
+Package: crystal
+Architecture: i386 amd64
+Provides: crystal-compiler, crystal-tools
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Compiler of the Crystal object-oriented programming language
+ The Crystal's language syntax is inspired by Ruby, the language is statically
+ type-checked but does not require that the type of variables or method
+ arguments be specified.
+ The language has the following goals: (1) have the same syntax as Ruby, or at
+ least as similar as possible; (2) statically type-checked but without having
+ to specify the type of variables or method arguments; (3) be able to call C
+ code by writing bindings to it in Crystal; (4) have compile-time evaluation
+ and generation of code, to avoid boilerplate code; (5) compile to efficient
+ native code.
