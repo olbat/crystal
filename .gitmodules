@@ -1,0 +1,3 @@
+[submodule "debian/misc/vim"]
+	path = debian/misc/vim
+	url = https://github.com/rhysd/vim-crystal

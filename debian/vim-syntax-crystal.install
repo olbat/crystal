@@ -1,0 +1,6 @@
+debian/misc/vim/plugin/*.vim /usr/share/vim/addons/plugin/
+debian/misc/vim/syntax/*.vim /usr/share/vim/addons/syntax/
+debian/misc/vim/ftdetect/*.vim /usr/share/vim/addons/ftdetect/
+debian/misc/vim/ftplugin/*.vim /usr/share/vim/addons/ftplugin/
+debian/misc/vim/indent/*.vim /usr/share/vim/addons/indent/
+debian/vim-registry/*.yaml /usr/share/vim/registry/

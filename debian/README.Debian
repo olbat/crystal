@@ -1,0 +1,18 @@
+== Git repository
+
+Since the git repository used to package the project uses git submodules, it
+should be initialized like this:
+    git submodule init
+    git submodule update
+
+
+== Vim addon
+
+The vim-syntax-crystal package provides the vim addon crystal, but it is not
+enabled by default. If you want to enable it for your user account just execute
+vim-addons install crystal. Similarly, to enable it for all users of this system
+just execute (as root) vim-addons -w install crystal. vim-addons is provided by
+the vim-addon-manager package, have a look at its manpage for more information.
+
+
+-- Luc Sarzyniec <debian@olbat.net>  Wed, 04 May 2016 08:42:11 +0200

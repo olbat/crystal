@@ -1,0 +1,8 @@
+addon: crystal-syntax
+description: "Addon to highlight Crystal"
+files:
+  - plugin/crystal.vim
+  - syntax/crystal.vim
+  - ftdetect/crystal.vim
+  - ftplugin/crystal.vim
+  - indent/crystal.vim
