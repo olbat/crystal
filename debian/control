@@ -54,3 +54,11 @@ Suggests: crystal
 Description: Crystal programming language - Vim highlighting syntax files
  This package provides syntax files for the Vim editor for editing code
  in Crystal programming language.
+
+Package: crystal-mode
+Architecture: all
+Depends: ${misc:Depends}, emacs
+Suggests: crystal
+Description: Crystal programming language - mode for GNU Emacs
+ This package provides a GNU Emacs major mode for editing code in
+ Crystal programming language.

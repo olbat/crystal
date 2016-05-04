@@ -1,3 +1,6 @@
 [submodule "debian/misc/vim"]
 	path = debian/misc/vim
 	url = https://github.com/rhysd/vim-crystal
+[submodule "debian/misc/emacs"]
+	path = debian/misc/emacs
+	url = https://github.com/jpellerin/emacs-crystal-mode
