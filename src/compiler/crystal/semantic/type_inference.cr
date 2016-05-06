@@ -9,7 +9,7 @@ module Crystal
   ValidExternalVarAttributes = ThreadLocalAttributes
   ValidClassVarAttributes    = ThreadLocalAttributes
   ValidStructDefAttributes   = %w(Packed)
-  ValidDefAttributes         = %w(AlwaysInline Naked NoInline Raises ReturnsTwice)
+  ValidDefAttributes         = %w(AlwaysInline Naked NoInline Raises ReturnsTwice Primitive)
   ValidFunDefAttributes      = %w(AlwaysInline Naked NoInline Raises ReturnsTwice CallConvention)
   ValidEnumDefAttributes     = %w(Flags)
 
@@ -18,21 +18,18 @@ module Crystal
     # - top level (TopLevelVisitor): declare clases, modules, macros, defs and other top-level stuff
     # - check abstract defs (AbstractDefChecker): check that abstract defs are implemented
     # - type declarations (TypeDeclarationVisitor): process type declarations like `@x : Int32`
-    # - initializers (InitializerVisitor): process initializers like `@x = 1`
+    # - instance_vars_initializers (InstanceVarsInitializerVisitor): process initializers like `@x = 1`
+    # - class_vars_initializers (ClassVarsInitializerVisitor): process initializers like `@@x = 1`
     # - main: process "main" code, calls and method bodies (the whole program).
     # - check recursive structs (RecursiveStructChecker): check that structs are not recursive (impossible to codegen)
     def infer_type(node, stats = false)
-      result = Crystal.timing("Semantic (top level)", stats) do
-        visit_top_level(node)
+      infer_type_top_level(node, stats: stats)
+
+      Crystal.timing("Semantic (ivars initializers)", stats) do
+        visit_instance_vars_initializers(node)
       end
-      Crystal.timing("Semantic (abstract def check)", stats) do
-        check_abstract_defs
-      end
-      result = Crystal.timing("Semantic (type declarations)", stats) do
-        visit_type_declarations(node)
-      end
-      result = Crystal.timing("Semantic (initializers)", stats) do
-        visit_initializers(node)
+      Crystal.timing("Semantic (cvars initializers)", stats) do
+        visit_class_vars_initializers(node)
       end
       result = Crystal.timing("Semantic (main)", stats) do
         visit_main(node)
@@ -44,6 +41,26 @@ module Crystal
         check_recursive_structs
       end
       result
+    end
+
+    # Processes type declarations and instance/class/global vars
+    # types are guessed or followed according to type annotations.
+    #
+    # This alone is useful for some tools like doc or hierarchy
+    # where a full semantic of the program is not needed.
+    def infer_type_top_level(node, stats = false)
+      Crystal.timing("Semantic (top level)", stats) do
+        visit_top_level(node)
+      end
+      Crystal.timing("Semantic (new)", stats) do
+        define_new_methods
+      end
+      Crystal.timing("Semantic (abstract def check)", stats) do
+        check_abstract_defs
+      end
+      Crystal.timing("Semantic (type declarations)", stats) do
+        visit_type_declarations(node)
+      end
     end
   end
 

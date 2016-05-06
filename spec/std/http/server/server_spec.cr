@@ -141,13 +141,45 @@ module HTTP
         io.to_s.should eq("HTTP/1.0 200 OK\r\n\r\n1234")
       end
 
-      it "resets and clears headers" do
+      it "resets and clears headers and cookies" do
         io = MemoryIO.new
         response = Response.new(io)
         response.headers["Foo"] = "Bar"
+        response.cookies["Bar"] = "Foo"
         response.reset
         response.headers.empty?.should be_true
+        response.cookies.empty?.should be_true
       end
+
+      it "writes cookie headers" do
+        io = MemoryIO.new
+        response = Response.new(io)
+        response.cookies["Bar"] = "Foo"
+        response.close
+        io.to_s.should eq("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: Bar=Foo; path=/\r\n\r\n")
+
+        io = MemoryIO.new
+        response = Response.new(io)
+        response.cookies["Bar"] = "Foo"
+        response.print("Hello")
+        response.close
+        io.to_s.should eq("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nSet-Cookie: Bar=Foo; path=/\r\n\r\nHello")
+      end
+    end
+  end
+
+  describe HTTP::Server do
+    it "re-sets special port zero after bind" do
+      server = Server.new(0) { |ctx| }
+      server.bind
+      server.port.should_not eq(0)
+    end
+
+    it "re-sets port to zero after close" do
+      server = Server.new(0) { |ctx| }
+      server.bind
+      server.close
+      server.port.should eq(0)
     end
   end
 

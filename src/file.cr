@@ -1,17 +1,8 @@
-lib LibC
-  fun access(filename : Char*, how : Int) : Int
-  fun link(oldpath : Char*, newpath : Char*) : Int
-  fun rename(oldname : Char*, newname : Char*) : Int
-  fun symlink(oldpath : Char*, newpath : Char*) : Int
-  fun unlink(filename : Char*) : Int
-  fun ftruncate(fd : Int, size : OffT) : Int
-  fun realpath(filename : Char*, realpath : Char*) : Char*
-
-  F_OK = 0
-  X_OK = 1 << 0
-  W_OK = 1 << 1
-  R_OK = 1 << 2
-end
+require "c/fcntl"
+require "c/stdio"
+require "c/stdlib"
+require "c/sys/stat"
+require "c/unistd"
 
 class File < IO::FileDescriptor
   # The file/directory separator character. '/' in unix, '\\' in windows.
@@ -31,7 +22,7 @@ class File < IO::FileDescriptor
   # :nodoc:
   DEFAULT_CREATE_MODE = LibC::S_IRUSR | LibC::S_IWUSR | LibC::S_IRGRP | LibC::S_IROTH
 
-  def initialize(filename, mode = "r", perm = DEFAULT_CREATE_MODE, encoding = nil, invalid = nil)
+  def initialize(filename : String, mode = "r", perm = DEFAULT_CREATE_MODE, encoding = nil, invalid = nil)
     oflag = open_flag(mode) | LibC::O_CLOEXEC
 
     fd = LibC.open(filename.check_no_null_byte, oflag, perm)
@@ -94,7 +85,7 @@ class File < IO::FileDescriptor
   # File.stat("foo").size  # => 4
   # File.stat("foo").mtime # => 2015-09-23 06:24:19 UTC
   # ```
-  def self.stat(path)
+  def self.stat(path) : Stat
     if LibC.stat(path.check_no_null_byte, out stat) != 0
       raise Errno.new("Unable to get stat for '#{path}'")
     end
@@ -110,7 +101,7 @@ class File < IO::FileDescriptor
   # File.lstat("foo").size  # => 4
   # File.lstat("foo").mtime # => 2015-09-23 06:24:19 UTC
   # ```
-  def self.lstat(path)
+  def self.lstat(path) : Stat
     if LibC.lstat(path.check_no_null_byte, out stat) != 0
       raise Errno.new("Unable to get lstat for '#{path}'")
     end
@@ -124,7 +115,7 @@ class File < IO::FileDescriptor
   # echo "foo" > foo
   # File.exists?("foo") # => true
   # ```
-  def self.exists?(filename)
+  def self.exists?(filename) : Bool
     accessible?(filename, LibC::F_OK)
   end
 
@@ -134,7 +125,7 @@ class File < IO::FileDescriptor
   # echo "foo" > foo
   # File.readable?("foo") # => true
   # ```
-  def self.readable?(filename)
+  def self.readable?(filename) : Bool
     accessible?(filename, LibC::R_OK)
   end
 
@@ -144,7 +135,7 @@ class File < IO::FileDescriptor
   # echo "foo" > foo
   # File.writable?("foo") # => true
   # ```
-  def self.writable?(filename)
+  def self.writable?(filename) : Bool
     accessible?(filename, LibC::W_OK)
   end
 
@@ -154,7 +145,7 @@ class File < IO::FileDescriptor
   # echo "foo" > foo
   # File.executable?("foo") # => false
   # ```
-  def self.executable?(filename)
+  def self.executable?(filename) : Bool
     accessible?(filename, LibC::X_OK)
   end
 
@@ -172,7 +163,7 @@ class File < IO::FileDescriptor
   # File.file?("bar")    # => false
   # File.file?("foobar") # => false
   # ```
-  def self.file?(path)
+  def self.file?(path) : Bool
     if LibC.stat(path.check_no_null_byte, out stat) != 0
       if Errno.value == Errno::ENOENT
         return false
@@ -192,7 +183,7 @@ class File < IO::FileDescriptor
   # File.directory?("bar")    # => true
   # File.directory?("foobar") # => false
   # ```
-  def self.directory?(path)
+  def self.directory?(path) : Bool
     Dir.exists?(path)
   end
 
@@ -201,7 +192,7 @@ class File < IO::FileDescriptor
   # ```
   # File.dirname("/foo/bar/file.cr") # => "/foo/bar"
   # ```
-  def self.dirname(filename)
+  def self.dirname(filename) : String
     filename.check_no_null_byte
     index = filename.rindex SEPARATOR
     if index
@@ -220,7 +211,7 @@ class File < IO::FileDescriptor
   # ```
   # File.basename("/foo/bar/file.cr") # => "file.cr"
   # ```
-  def self.basename(filename)
+  def self.basename(filename) : String
     return "" if filename.bytesize == 0
     return SEPARATOR_STRING if filename == SEPARATOR_STRING
 
@@ -243,7 +234,7 @@ class File < IO::FileDescriptor
   # ```
   # File.basename("/foo/bar/file.cr", ".cr") # => "file"
   # ```
-  def self.basename(filename, suffix)
+  def self.basename(filename, suffix) : String
     suffix.check_no_null_byte
     basename = basename(filename)
     basename = basename[0, basename.size - suffix.size] if basename.ends_with?(suffix)
@@ -272,7 +263,7 @@ class File < IO::FileDescriptor
   # File.extname("foo.cr")
   # # => .cr
   # ```
-  def self.extname(filename)
+  def self.extname(filename) : String
     filename.check_no_null_byte
 
     dot_index = filename.rindex('.')
@@ -284,7 +275,7 @@ class File < IO::FileDescriptor
     end
   end
 
-  def self.expand_path(path, dir = nil)
+  def self.expand_path(path, dir = nil) : String
     path.check_no_null_byte
 
     if path.starts_with?('~')
@@ -323,7 +314,7 @@ class File < IO::FileDescriptor
   end
 
   # Resolves the real path of the file by following symbolic links
-  def self.real_path(path)
+  def self.real_path(path) : String
     real_path_ptr = LibC.realpath(path, nil)
     raise Errno.new("Error resolving real path of #{path}") unless real_path_ptr
     String.new(real_path_ptr).tap { LibC.free(real_path_ptr as Void*) }
@@ -344,7 +335,7 @@ class File < IO::FileDescriptor
   end
 
   # Returns true if the pointed file is a symlink.
-  def self.symlink?(filename)
+  def self.symlink?(filename) : Bool
     if LibC.lstat(filename.check_no_null_byte, out stat) != 0
       if Errno.value == Errno::ENOENT
         return false
@@ -355,7 +346,7 @@ class File < IO::FileDescriptor
     (stat.st_mode & LibC::S_IFMT) == LibC::S_IFLNK
   end
 
-  def self.open(filename, mode = "r", perm = DEFAULT_CREATE_MODE, encoding = nil, invalid = nil)
+  def self.open(filename, mode = "r", perm = DEFAULT_CREATE_MODE, encoding = nil, invalid = nil) : self
     new filename, mode, perm, encoding, invalid
   end
 
@@ -375,7 +366,7 @@ class File < IO::FileDescriptor
   # File.read("./bar")
   # # => foo
   # ```
-  def self.read(filename, encoding = nil, invalid = nil)
+  def self.read(filename, encoding = nil, invalid = nil) : String
     File.open(filename, "r") do |file|
       if encoding
         file.set_encoding(encoding, invalid: invalid)
@@ -405,6 +396,11 @@ class File < IO::FileDescriptor
     end
   end
 
+  # Returns an `Iterator` for each line in the given file.
+  def self.each_line(filename, encoding = nil, invalid = nil)
+    File.open(filename, "r", encoding: encoding, invalid: invalid).each_line
+  end
+
   # Returns all lines of the given file as an array of strings.
   #
   # ```crystal
@@ -413,7 +409,7 @@ class File < IO::FileDescriptor
   # File.read_lines("./foobar")
   # # => ["foo\n","bar\n"]
   # ```
-  def self.read_lines(filename, encoding = nil, invalid = nil)
+  def self.read_lines(filename, encoding = nil, invalid = nil) : Array(String)
     lines = [] of String
     each_line(filename, encoding: encoding, invalid: invalid) do |line|
       lines << line
@@ -440,7 +436,7 @@ class File < IO::FileDescriptor
   # File.join("foo/", "/bar/", "/baz")   # => "foo/bar/baz"
   # File.join("/foo/", "/bar/", "/baz/") # => "/foo/bar/baz/"
   # ```
-  def self.join(*parts)
+  def self.join(*parts) : String
     join parts
   end
 
@@ -451,7 +447,7 @@ class File < IO::FileDescriptor
   # File.join("foo/", "/bar/", "/baz")   # => "foo/bar/baz"
   # File.join("/foo/", "/bar/", "/baz/") # => "/foo/bar/baz/"
   # ```
-  def self.join(parts : Array | Tuple)
+  def self.join(parts : Array | Tuple) : String
     String.build do |str|
       parts.each_with_index do |part, index|
         part.check_no_null_byte
@@ -476,7 +472,7 @@ class File < IO::FileDescriptor
   end
 
   # Returns the size of the given file in bytes.
-  def self.size(filename)
+  def self.size(filename) : UInt64
     stat(filename.check_no_null_byte).size
   end
 

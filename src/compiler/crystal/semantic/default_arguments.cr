@@ -20,7 +20,7 @@ class Crystal::Def
     end
 
     # If there are no named args and all unspecified default arguments are magic
-    # constants we can return outself (magic constants will be filled later)
+    # constants we can return ourself (magic constants will be filled later)
     if !named_args && !splat_index
       all_magic = true
       args_size.upto(args.size - 1) do |index|
@@ -84,10 +84,10 @@ class Crystal::Def
     end
 
     expansion = Def.new(new_name, new_args, nil, receiver.clone, block_arg.clone, return_type.clone, macro_def?, yields)
-    expansion.instance_vars = instance_vars
     expansion.args.each { |arg| arg.default_value = nil }
     expansion.calls_super = calls_super
     expansion.calls_initialize = calls_initialize
+    expansion.calls_previous_def = calls_previous_def
     expansion.uses_block_arg = uses_block_arg
     expansion.yields = yields
     expansion.location = location
@@ -201,10 +201,7 @@ class Crystal::Def
   end
 
   class ReplaceFreeVarTransformer < Transformer
-    @free_var_name : String
-    @replacement_name : String
-
-    def initialize(@free_var_name, @replacement_name)
+    def initialize(@free_var_name : String, @replacement_name : String)
     end
 
     def transform(node : Generic)

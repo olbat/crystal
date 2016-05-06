@@ -1,10 +1,8 @@
 class LLVM::Context
-  @unwrap : LibLLVM::ContextRef
-
-  def initialize(@unwrap)
+  def initialize(@unwrap : LibLLVM::ContextRef)
   end
 
-  def self.global
+  def self.global : self
     new LibLLVM.get_global_context
   end
 

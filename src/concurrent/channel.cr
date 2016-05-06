@@ -13,11 +13,11 @@ abstract class Channel(T)
     @receivers = Deque(Fiber).new
   end
 
-  def self.new
+  def self.new : Unbuffered(T)
     Unbuffered(T).new
   end
 
-  def self.new(capacity)
+  def self.new(capacity) : Buffered(T)
     Buffered(T).new(capacity)
   end
 
@@ -109,9 +109,7 @@ abstract class Channel(T)
   end
 
   struct ReceiveOp(C, T)
-    @channel : C
-
-    def initialize(@channel : Channel(T))
+    def initialize(@channel : C)
     end
 
     def ready?
@@ -132,10 +130,7 @@ abstract class Channel(T)
   end
 
   struct SendOp(C, T)
-    @channel : C
-    @value : T
-
-    def initialize(@channel : Channel(T), @value : T)
+    def initialize(@channel : C, @value : T)
     end
 
     def ready?
@@ -158,7 +153,7 @@ end
 
 class Channel::Buffered(T) < Channel(T)
   def initialize(@capacity = 32)
-    @queue = Array(T).new(@capacity)
+    @queue = Deque(T).new(@capacity)
     super()
   end
 
@@ -201,6 +196,8 @@ class Channel::Buffered(T) < Channel(T)
 end
 
 class Channel::Unbuffered(T) < Channel(T)
+  @sender : Fiber?
+
   def initialize
     @has_value = false
     @value = uninitialized T

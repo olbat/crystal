@@ -1,4 +1,4 @@
-def Object.from_yaml(string : String)
+def Object.from_yaml(string : String) : self
   parser = YAML::PullParser.new(string)
   parser.read_stream do
     parser.read_document do
@@ -90,9 +90,30 @@ def Tuple.new(pull : YAML::PullParser)
  {% end %}
 end
 
+def Enum.new(pull : YAML::PullParser)
+  string = pull.read_scalar
+  if value = string.to_i64?
+    from_value(value)
+  else
+    parse(string)
+  end
+end
+
 struct Time::Format
   def from_yaml(pull : YAML::PullParser)
     string = pull.read_scalar
     parse(string)
+  end
+end
+
+module Time::EpochConverter
+  def self.from_yaml(value : YAML::PullParser) : Time
+    Time.epoch(value.read_scalar.to_i)
+  end
+end
+
+module Time::EpochMillisConverter
+  def self.from_yaml(value : YAML::PullParser) : Time
+    Time.epoch_ms(value.read_scalar.to_i64)
   end
 end

@@ -1,11 +1,6 @@
 module YAML
   class Generator
-    @io : IO
-    @recent_nl : Bool
-    @first : Bool
-    @indent : String?
-
-    def initialize(@io)
+    def initialize(@io : IO)
       @recent_nl = false
       @first = true
       @io << "--- "
@@ -117,5 +112,17 @@ end
 struct Symbol
   def to_yaml(yaml : YAML::Generator)
     yaml << to_s
+  end
+end
+
+struct Enum
+  def to_yaml(yaml : YAML::Generator)
+    yaml << value
+  end
+end
+
+module Time::EpochConverter
+  def self.to_yaml(value : Time, io : IO)
+    io << value.epoch
   end
 end

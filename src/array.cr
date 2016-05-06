@@ -55,7 +55,6 @@ class Array(T)
   # ```
   getter size : Int32
   @capacity : Int32
-  @buffer : T*
 
   # Creates a new empty Array.
   def initialize
@@ -479,7 +478,7 @@ class Array(T)
     self[*range_to_index_and_count(range)] = values
   end
 
-  # Returns all elements that are within the given range
+  # Returns all elements that are within the given range.
   #
   # Negative indices count backward from the end of the array (-1 is the last
   # element). Additionally, an empty array is returned when the starting index
@@ -577,6 +576,44 @@ class Array(T)
     indexes.map { |index| self[index] }
   end
 
+  # By using binary search, returns the first element
+  # for which the passed block returns `true`.
+  #
+  # If the block returns `false`, the finding element exists
+  # behind. If the block returns `true`, the finding element
+  # is itself or exists infront.
+  #
+  # Binary search needs sorted array, so self has to be sorted.
+  #
+  # Returns `nil` if the block didn't return `true` for any element.
+  #
+  # ```
+  # [2, 5, 7, 10].bsearch { |x| x >= 4 } # => 5
+  # [2, 5, 7, 10].bsearch { |x| x > 10 } # => nil
+  # ```
+  def bsearch
+    bsearch_index { |value| yield value }.try { |index| self[index] }
+  end
+
+  # By using binary search, returns the index of the first element
+  # for which the passed block returns `true`.
+  #
+  # If the block returns `false`, the finding element exists
+  # behind. If the block returns `true`, the finding element
+  # is itself or exists infront.
+  #
+  # Binary search needs sorted array, so self has to be sorted.
+  #
+  # Returns `nil` if the block didn't return `true` for any element.
+  #
+  # ```
+  # [2, 5, 7, 10].bsearch_index { |x, i| x >= 4 } # => 1
+  # [2, 5, 7, 10].bsearch_index { |x, i| x > 10 } # => nil
+  # ```
+  def bsearch_index
+    (0...size).bsearch { |index| yield self[index], index }
+  end
+
   # Removes all elements from self.
   #
   # ```
@@ -609,7 +646,7 @@ class Array(T)
     Array(T).new(size) { |i| @buffer[i].clone as T }
   end
 
-  # Returns a copy of self with all ` elements removed.
+  # Returns a copy of self with all `nil` elements removed.
   #
   # ```
   # ["a", nil, "b", nil, "c", nil].compact # => ["a", "b", "c"]
@@ -618,7 +655,7 @@ class Array(T)
     compact_map &.itself
   end
 
-  # Removes all ` elements from `self`.
+  # Removes all `nil` elements from `self`.
   #
   # ```
   # ary = ["a", nil, "b", nil, "c"]
@@ -1007,7 +1044,7 @@ class Array(T)
     self[0, n]
   end
 
-  # Returns the first element of `self` if it's not empty, or `.
+  # Returns the first element of `self` if it's not empty, or `nil`.
   #
   # ```
   # ([1, 2, 3]).first?   # => 1
@@ -1093,7 +1130,7 @@ class Array(T)
     end
   end
 
-  # Returns the last element of `self` if it's not empty, or `.
+  # Returns the last element of `self` if it's not empty, or `nil`.
   #
   # ```
   # ([1, 2, 3]).last?   # => 1
@@ -1127,7 +1164,7 @@ class Array(T)
   end
 
   # Modifies `self`, keeping only the elements in the collection for which the
-  # passed block returns *true*. Returns ` if no changes were made.
+  # passed block returns *true*. Returns `nil` if no changes were made.
   #
   # See also `Array#select`
   def select!
@@ -1135,7 +1172,7 @@ class Array(T)
   end
 
   # Modifies `self`, deleting the elements in the collection for which the
-  # passed block returns *true*. Returns ` if no changes were made.
+  # passed block returns *true*. Returns `nil` if no changes were made.
   #
   # See also `Array#reject`
   def reject!
@@ -1296,7 +1333,7 @@ class Array(T)
 
   # Returns a new Array that is a one-dimensional flattening of self (recursively).
   #
-  # That is, for every element that is an array, extract its elements into the new array
+  # That is, for every element that is an array, extract its elements into the new array.
   #
   # ```
   # s = [1, 2, 3]         # => [1, 2, 3]
@@ -1484,8 +1521,8 @@ class Array(T)
     result
   end
 
-  def product(ary, &block)
-    self.each { |a| ary.each { |b| yield a, b } }
+  def product(enumerable : Enumerable(U), &block)
+    self.each { |a| enumerable.each { |b| yield a, b } }
   end
 
   # Append. Pushes one value to the end of `self`, given that the type of the value is *T*
@@ -1495,7 +1532,7 @@ class Array(T)
   # ```
   # a = ["a", "b"]
   # a.push("c") # => ["a", "b", "c"]
-  # a.push(1)   # => Errors, because the array only accepts String
+  # a.push(1)   # => Errors, because the array only accepts String.
   #
   # a = ["a", "b"] of (Int32 | String)
   # a.push("c") # => ["a", "b", "c"]
@@ -1934,7 +1971,7 @@ class Array(T)
   # ```
   # a = ["a", "b"]
   # a.unshift("c") # => ["c", a", "b"]
-  # a.unshift(1)   # => Errors, because the array only accepts String
+  # a.unshift(1)   # => Errors, because the array only accepts String.
   #
   # a = ["a", "b"] of (Int32 | String)
   # a.unshift("c") # => ["c", "a", "b"]

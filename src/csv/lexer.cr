@@ -1,3 +1,5 @@
+require "./csv"
+
 # A CSV lexer lets you consume a CSV token by token. You can use this to efficiently
 # parse a CSV without the need to allocate intermediate arrays.
 #
@@ -24,11 +26,6 @@ abstract class CSV::Lexer
   getter token : Token
   getter separator : Char
   getter quote_char : Char
-
-  @buffer : MemoryIO
-  @column_number : Int32
-  @line_number : Int32
-  @last_empty_column : Bool
 
   # :nodoc:
   def initialize(@separator = DEFAULT_SEPARATOR, @quote_char = DEFAULT_QUOTE_CHAR)

@@ -4,9 +4,8 @@ class Crystal::Doc::Type
   include Item
 
   getter type : Crystal::Type
-  @generator : Generator
 
-  def initialize(@generator, @type : Crystal::Type)
+  def initialize(@generator : Generator, @type : Crystal::Type)
   end
 
   def kind
@@ -218,7 +217,7 @@ class Crystal::Doc::Type
               body = a_def.body
 
               # Skip auto-generated allocate method
-              if body.is_a?(Crystal::Primitive) && body.name == :allocate
+              if body.is_a?(Crystal::Primitive) && body.name == "allocate"
                 next
               end
 
@@ -660,7 +659,6 @@ class Crystal::Doc::Type
 
   def type_to_html(type : Crystal::VirtualType, io, text = nil, links = true)
     type_to_html type.base_type, io, text, links: links
-    io << '+'
   end
 
   def type_to_html(type : Crystal::Type, io, text = nil, links = true)

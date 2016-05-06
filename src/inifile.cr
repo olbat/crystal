@@ -1,5 +1,10 @@
 class IniFile
-  def self.load(str)
+  # Parses INI-style configuration from the given string.
+  #
+  # ```
+  # IniFile.load("[foo]\na = 1") # => {"foo" => {"a" => "1"}}
+  # ```
+  def self.load(str) : Hash(String, Hash(String, String))
     ini = {} of String => Hash(String, String)
 
     section = ""

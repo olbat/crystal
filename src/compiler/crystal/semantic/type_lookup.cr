@@ -7,19 +7,25 @@ module Crystal
     @self_type : Type
     @raise : Bool
 
-    def self.lookup(root_type, node, self_type = root_type)
-      lookup = new root_type, self_type
+    def self.lookup(root_type, node, self_type = root_type, allow_typeof = true)
+      lookup = new root_type, self_type, allow_typeof: allow_typeof
       node.clone.accept lookup
       lookup.type.not_nil!
+    end
+
+    def self.lookup?(root_type, node, self_type = root_type, allow_typeof = true)
+      lookup = new root_type, self_type, raise: false, allow_typeof: allow_typeof
+      node.clone.accept lookup
+      lookup.type?
     end
 
     def initialize(@root)
       @self_type = @root
       @raise = true
+      @allow_typeof = true
     end
 
-    def initialize(@root, @self_type)
-      @raise = true
+    def initialize(@root, @self_type, @raise = true, @allow_typeof = true)
     end
 
     delegate program, @root
@@ -47,24 +53,23 @@ module Crystal
 
         Crystal.check_type_allowed_in_generics(ident, type, "can't use #{type} in a union type")
 
-        type
+        type.virtual_type
       end
       @type = program.type_merge(types)
       false
     end
 
-    def end_visit(node : Virtual)
-      @type = type.instance_type.virtual_type
-    end
-
-    def end_visit(node : Metaclass)
-      @type = type.metaclass.virtual_type
+    def visit(node : Metaclass)
+      node.name.accept self
+      @type = type.virtual_type.metaclass.virtual_type
+      false
     end
 
     def visit(node : Generic)
       node.name.accept self
+      return false if !@raise && !@type
 
-      instance_type = @type.not_nil!
+      instance_type = self.type
       unless instance_type.is_a?(GenericClassType)
         node.raise "#{instance_type} is not a generic class, it's a #{instance_type.type_desc}"
       end
@@ -81,13 +86,25 @@ module Crystal
       end
 
       type_vars = node.type_vars.map do |type_var|
-        @type = nil
-        type_var.accept self
-        return false if !@raise && !@type
+        if type_var.is_a?(NumberLiteral)
+          type_var
+        else
+          # Check the case of T resolving to a number
+          if type_var.is_a?(Path) && type_var.names.size == 1
+            the_type = @root.lookup_type(type_var)
+            if the_type.is_a?(ASTNode)
+              next the_type as TypeVar
+            end
+          end
 
-        Crystal.check_type_allowed_in_generics(type_var, type, "can't use #{type} as a generic type argument")
+          @type = nil
+          type_var.accept self
+          return false if !@raise && !@type
 
-        type.virtual_type as TypeVar
+          Crystal.check_type_allowed_in_generics(type_var, type, "can't use #{type} as a generic type argument")
+
+          type.virtual_type
+        end as TypeVar
       end
 
       begin
@@ -107,7 +124,7 @@ module Crystal
 
           Crystal.check_type_allowed_in_generics(input, type, "can't use #{type} as proc argument")
 
-          types << type
+          types << type.virtual_type
         end
       end
 
@@ -118,7 +135,7 @@ module Crystal
 
         Crystal.check_type_allowed_in_generics(output, type, "can't use #{type} as proc return type")
 
-        types << type
+        types << type.virtual_type
       else
         types << program.void
       end
@@ -128,11 +145,19 @@ module Crystal
     end
 
     def visit(node : Self)
-      @type = @self_type
+      @type = @self_type.virtual_type
       false
     end
 
     def visit(node : TypeOf)
+      unless @allow_typeof
+        if @raise
+          node.raise "can't use 'typeof' here"
+        else
+          return false
+        end
+      end
+
       meta_vars = MetaVars{"self": MetaVar.new("self", @self_type)}
       visitor = MainVisitor.new(program, meta_vars)
       node.expressions.each &.accept visitor

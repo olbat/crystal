@@ -1,3 +1,5 @@
+require "../semantic/ast"
+
 module Crystal
   class ASTNode
     def to_macro_id
@@ -599,7 +601,7 @@ module Crystal
     end
   end
 
-  class MetaVar
+  class MetaVar < ASTNode
     def to_macro_id
       @name
     end
@@ -674,6 +676,8 @@ module Crystal
         end
       when "type"
         interpret_argless_method(method, args) { @declared_type }
+      when "value"
+        interpret_argless_method(method, args) { @value || Nop.new }
       else
         super
       end

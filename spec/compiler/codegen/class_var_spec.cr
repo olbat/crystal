@@ -20,6 +20,8 @@ describe "Codegen: class var" do
       struct Nil; def to_i; 0; end; end
 
       class Foo
+        @@foo = nil
+
         def self.foo
           @@foo
         end
@@ -58,20 +60,6 @@ describe "Codegen: class var" do
       ").to_i.should eq(1)
   end
 
-  it "codegens class var of program" do
-    run("
-      @@foo = 1
-      @@foo
-      ").to_i.should eq(1)
-  end
-
-  it "codegens class var of program as nil" do
-    run("
-      struct Nil; def to_i; 0; end; end
-      @@foo.to_i
-      ").to_i.should eq(0)
-  end
-
   it "codegens class var inside module" do
     run("
       module Foo
@@ -98,5 +86,184 @@ describe "Codegen: class var" do
 
       Foo.foo
       ").to_i.should eq(1)
+  end
+
+  it "reads class var before initializing it (hoisting)" do
+    run(%(
+      x = Foo.var
+
+      class Foo
+        @@var = 42
+
+        def self.var
+          @@var
+        end
+      end
+
+      x
+      )).to_i.should eq(42)
+  end
+
+  it "uses var in class var initializer" do
+    run(%(
+      class Foo
+        @@var : Int32
+        @@var = begin
+          a = class_method
+          a + 3
+        end
+
+        def self.var
+          @@var
+        end
+
+        def self.class_method
+          1 + 2
+        end
+      end
+
+      Foo.var
+      )).to_i.should eq(6)
+  end
+
+  it "reads simple class var before another complex one" do
+    run(%(
+      class Foo
+        @@var2 : Int32
+        @@var2 = @@var + 1
+
+        @@var = 41
+
+        def self.var2
+          @@var2
+        end
+      end
+
+      Foo.var2
+      )).to_i.should eq(42)
+  end
+
+  it "initializes class var of union with single type" do
+    run(%(
+      class Foo
+        @@var : Int32 | String
+        @@var = 42
+
+        def self.var
+          @@var
+        end
+      end
+
+      var = Foo.var
+      if var.is_a?(Int32)
+        var
+      else
+        0
+      end
+      )).to_i.should eq(42)
+  end
+
+  it "initializes class var with array literal" do
+    run(%(
+      require "prelude"
+
+      class Foo
+        @@var = [1, 2, 4]
+
+        def self.var
+          @@var
+        end
+      end
+
+      Foo.var.size
+      )).to_i.should eq(3)
+  end
+
+  it "initializes class var conditionally" do
+    run(%(
+      class Foo
+        if 1 == 2
+          @@x = 3
+        else
+          @@x = 4
+        end
+
+        def self.x
+          @@x
+        end
+      end
+
+      Foo.x
+      )).to_i.should eq(4)
+  end
+
+  it "codegens second class var initializer" do
+    run(%(
+      class Foo
+        @@var = 1
+        @@var = 2
+
+        def self.var
+          @@var
+        end
+      end
+
+      Foo.var
+      )).to_i.should eq(2)
+  end
+
+  it "initializes dependent constant before class var" do
+    run(%(
+      def foo
+        a = 1
+        b = 2
+        a + b
+      end
+
+      A = foo()
+
+      class Foo
+        @@foo : Int32
+        @@foo = A
+
+        def self.foo
+          @@foo
+        end
+      end
+
+      Foo.foo
+      )).to_i.should eq(3)
+  end
+
+  it "declares and initializes" do
+    run(%(
+      class Foo
+        @@x : Int32 = 42
+
+        def self.x
+          @@x
+        end
+      end
+
+      Foo.x
+      )).to_i.should eq(42)
+  end
+
+  it "doesn't use nilable type for initializer" do
+    run(%(
+      class Foo
+        @@foo : Int32?
+        @@foo = 42
+
+        @@bar : Int32?
+        @@bar = @@foo
+
+        def self.bar
+          @@bar
+        end
+      end
+
+      Foo.bar || 10
+      )).to_i.should eq(42)
   end
 end

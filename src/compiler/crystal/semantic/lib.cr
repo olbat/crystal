@@ -7,6 +7,8 @@ class Crystal::Call
     external = obj_type.lookup_first_def(name, false) as External?
     raise "undefined fun '#{name}' for #{obj_type}" unless external
 
+    check_lib_call_named_args(external)
+
     check_fun_args_size_match obj_type, external
     check_fun_out_args external
     return unless obj_and_args_types_set?
@@ -25,6 +27,65 @@ class Crystal::Call
     if (parent_visitor = @parent_visitor) && (ptyped_def = parent_visitor.typed_def?) && untyped_defs.try(&.any?(&.raises))
       ptyped_def.raises = true
     end
+  end
+
+  def check_lib_call_named_args(external)
+    named_args = self.named_args
+    return unless named_args
+
+    if external.varargs
+      raise "can't use named args with variadic function"
+    end
+
+    # We check that all arguments are covered, and then we
+    # rewrite this call to not have named arguments
+    # (a dispatch can't include a lib type, so this call
+    # will only resolve to a function)
+
+    covered = BitArray.new(external.args.size)
+    args.size.times do |i|
+      covered[i] = true
+    end
+
+    # We gather named args according to their index.
+    sorted_named_args = [] of {Int32, NamedArgument}
+    named_args.each do |named_arg|
+      found_index = external.args.index { |arg| arg.name == named_arg.name }
+      unless found_index
+        named_arg.raise "no argument named '#{named_arg.name}'"
+      end
+
+      if covered[found_index]
+        named_arg.raise "argument '#{named_arg.name}' already specified"
+      end
+
+      covered[found_index] = true
+      sorted_named_args << {found_index, named_arg}
+    end
+
+    missing_args = [] of String
+    covered.each_with_index do |value, index|
+      unless value
+        missing_args << external.args[index].name
+      end
+    end
+
+    if missing_args.size == 1
+      raise "missing argument: #{missing_args.first}"
+    elsif missing_args.size > 1
+      raise "missing arguments: #{missing_args.join ", "}"
+    end
+
+    # Now we sort the named args according to their index.
+    # We can now append them to this call, as they necessarily
+    # must come after positional args that are already covered
+    # (and we checked that all args are covered), and we
+    # remove our named args.
+    sorted_named_args.sort_by! &.[0]
+    sorted_named_args.each do |tuple|
+      self.args << tuple[1].value
+    end
+    self.named_args = nil
   end
 
   def check_fun_args_size_match(obj_type, external)
@@ -48,6 +109,10 @@ class Crystal::Call
       if call_arg.is_a?(Out)
         arg_type = arg.type
         if arg_type.is_a?(PointerInstanceType)
+          if arg_type.element_type.remove_indirection.void?
+            call_arg.raise "can't use out with Void* (argument #{lib_arg_name(arg, i)} of #{untyped_def.owner}.#{untyped_def.name} is Void*)"
+          end
+
           if call_arg.exp.is_a?(Underscore)
             call_arg.exp.type = arg_type.element_type
           else
@@ -57,7 +122,7 @@ class Crystal::Call
             parent_visitor.bind_meta_var(call_arg.exp)
           end
         else
-          call_arg.raise "argument \##{i + 1} to #{untyped_def.owner}.#{untyped_def.name} cannot be passed as 'out' because it is not a pointer"
+          call_arg.raise "argument #{lib_arg_name(arg, i)} of #{untyped_def.owner}.#{untyped_def.name} cannot be passed as 'out' because it is not a pointer"
         end
       end
     end
@@ -128,7 +193,7 @@ class Crystal::Call
 
     implicit_call = Conversions.try_to_unsafe(self_arg.clone, parent_visitor) do |ex|
       if Conversions.to_unsafe_lookup_failed?(ex)
-        arg_name = typed_def_arg.name.bytesize > 0 ? "'#{typed_def_arg.name}'" : "##{index + 1}"
+        arg_name = lib_arg_name(typed_def_arg, index)
 
         if expected_type.is_a?(FunInstanceType) &&
            actual_type.is_a?(FunInstanceType) &&
@@ -147,7 +212,7 @@ class Crystal::Call
       if implicit_call_type.compatible_with?(expected_type)
         self.args[index] = implicit_call
       else
-        arg_name = typed_def_arg.name.bytesize > 0 ? "'#{typed_def_arg.name}'" : "##{index + 1}"
+        arg_name = lib_arg_name(typed_def_arg, index)
         self_arg.raise "argument #{arg_name} of '#{full_name(obj_type)}' must be #{expected_type}, not #{actual_type} (nor #{implicit_call_type} returned by '#{actual_type}#to_unsafe')"
       end
     else
@@ -157,6 +222,7 @@ class Crystal::Call
 
   def check_not_lib_out_args
     args.find(&.is_a?(Out)).try &.raise "out can only be used with lib funs"
+    named_args.try &.find(&.value.is_a?(Out)).try &.raise "out can only be used with lib funs"
   end
 
   def convert_numeric_argument(self_arg, unaliased_type, expected_type, actual_type, index)
@@ -180,4 +246,8 @@ class Crystal::Call
     self.args[index] = convert_call
     true
   end
+end
+
+private def lib_arg_name(arg, index)
+  arg.name.empty? ? "##{index + 1}" : "'#{arg.name}'"
 end

@@ -15,6 +15,16 @@ module Crystal
       after_inference_types.each do |type|
         cleanup_type type, transformer
       end
+
+      self.class_var_and_const_initializers.map! do |initializer|
+        if initializer.is_a?(ClassVarInitializer)
+          new_node = initializer.node.transform(transformer)
+          unless new_node.same?(initializer.node)
+            initializer = ClassVarInitializer.new(initializer.owner, initializer.name, new_node, initializer.meta_vars)
+          end
+        end
+        initializer
+      end
     end
 
     def cleanup_type(type, transformer)
@@ -45,15 +55,10 @@ module Crystal
   # idea on how to generate code for unreachable branches, because they have no type,
   # and for now the codegen only deals with typed nodes.
   class CleanupTransformer < Transformer
-    @program : Program
-    @transformed : Set(UInt64)
-    @def_nest_count : Int32
-    @last_is_truthy : Bool
-    @last_is_falsey : Bool
     @const_being_initialized : Path?
 
-    def initialize(@program)
-      @transformed = Set(typeof(object_id)).new
+    def initialize(@program : Program)
+      @transformed = Set(UInt64).new
       @def_nest_count = 0
       @last_is_truthy = false
       @last_is_falsey = false
@@ -69,10 +74,27 @@ module Crystal
         else
           @last_is_falsey = true
         end
+      when Not
+        if @last_is_truthy
+          @last_is_falsey = true
+          @last_is_truthy = false
+        elsif @last_is_falsey
+          @last_is_truthy = true
+          @last_is_falsey = false
+        else
+          reset_last_status
+        end
       when NilLiteral
         @last_is_falsey = true
+      when Nop
+        @last_is_falsey = true
       else
-        reset_last_status
+        if node.type?.try &.nil_type?
+          @last_is_falsey = true
+          @last_is_truthy = false
+        else
+          reset_last_status
+        end
       end
     end
 
@@ -151,6 +173,11 @@ module Crystal
       reset_last_status
 
       target = node.target
+
+      # Ignore class var initializers
+      if target.is_a?(ClassVar) && !target.type?
+        return node
+      end
 
       # This is the case of an instance variable initializer
       if @def_nest_count == 0 && target.is_a?(InstanceVar)
@@ -710,10 +737,6 @@ module Crystal
       return node unless obj_type
 
       to_type = node.to.type
-
-      if to_type == @program.object
-        node.raise "useless cast"
-      end
 
       if to_type.pointer?
         if obj_type.pointer? || obj_type.reference_like?

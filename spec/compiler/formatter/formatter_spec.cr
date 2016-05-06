@@ -3,13 +3,13 @@ require "../../spec_helper"
 private def assert_format(input, output = input, strict = false, file = __FILE__, line = __LINE__)
   it "formats #{input.inspect}", file, line do
     output = "#{output}\n" unless strict
-    result = Crystal::Formatter.format(input)
+    result = Crystal.format(input)
     unless result == output
       fail "Expected\n\n~~~\n#{input}\n~~~\nto format to:\n\n~~~\n#{output}\n~~~\n\nbut got:\n\n~~~\n#{result}\n~~~\n\n  assert_format #{input.inspect}, #{result.chomp.inspect}"
     end
 
     # Check idempotency
-    result2 = Crystal::Formatter.format(result)
+    result2 = Crystal.format(result)
     unless result == result2
       fail "Idempotency failed:\nBefore: #{result.inspect}\nAfter:  #{result2.inspect}"
     end
@@ -151,7 +151,6 @@ describe Crystal::Formatter do
   assert_format "def   foo (  x  :  Int32 )  \n  end", "def foo(x : Int32)\nend"
   assert_format "def   foo (  x  :  self )  \n  end", "def foo(x : self)\nend"
   assert_format "def   foo (  x  :  Foo.class )  \n  end", "def foo(x : Foo.class)\nend"
-  assert_format "def   foo (  x  :  Foo+ )  \n  end", "def foo(x : Foo+)\nend"
   assert_format "def   foo (  x  :   Int32  =  1 )  \n  end", "def foo(x : Int32 = 1)\nend"
   assert_format "abstract  def   foo  \n  1", "abstract def foo\n\n1"
   assert_format "def foo( & block )\nend", "def foo(&block)\nend"
@@ -391,6 +390,7 @@ describe Crystal::Formatter do
   assert_format "class Foo\n@x  :  Int32\nend", "class Foo\n  @x : Int32\nend"
   assert_format "class Foo\nx = 1\nend", "class Foo\n  x = 1\nend"
   assert_format "x  =   uninitialized   Int32", "x = uninitialized Int32"
+  assert_format "x  :   Int32  =   1", "x : Int32 = 1"
 
   assert_format "def foo\n@x  :  Int32\nend", "def foo\n  @x : Int32\nend"
   assert_format "def foo\n@x   =  uninitialized   Int32\nend", "def foo\n  @x = uninitialized Int32\nend"
@@ -499,6 +499,7 @@ describe Crystal::Formatter do
   assert_format "  {% begin %} 2 {% end %}", "{% begin %} 2 {% end %}"
   assert_format "macro foo\n  \\{\nend"
   assert_format "macro foo\n  {% if 1 %} 2 {% elsif 3 %} 4 {% else %} 5 {% end %}\nend"
+  assert_format "macro [](x)\nend"
 
   assert_format "def foo\na = bar do\n1\nend\nend", "def foo\n  a = bar do\n    1\n  end\nend"
   assert_format "def foo\nend\ndef bar\nend", "def foo\nend\n\ndef bar\nend"
@@ -847,4 +848,23 @@ describe Crystal::Formatter do
   assert_format "foo(<<-X\na\nX\n, 1)"
   assert_format "def bar\n  foo(<<-X\n  a\n  X\n  , 1)\nend"
   assert_format %(run("a", 1))
+
+  assert_format "foo.bar # comment\n   .baz"
+  assert_format "foo.bar(1) # comment\n   .baz"
+
+  assert_format "foo[bar.baz]\n  .qux"
+
+  assert_format "bla.select(&.all?{ |x| x } )", "bla.select(&.all? { |x| x })"
+  assert_format "def foo\n  <<-FOO\n  foo \#{1}\n  FOO\nend"
+
+  assert_format "@x : A(B | C)?"
+
+  assert_format "page= <<-HTML\n  foo\nHTML", "page = <<-HTML\n  foo\nHTML"
+  assert_format "page= <<-HTML\n  \#{1}foo\nHTML", "page = <<-HTML\n  \#{1}foo\nHTML"
+
+  assert_format "foo.as ( Int32* )", "foo.as(Int32*)"
+  assert_format "foo.as   Int32*", "foo.as Int32*"
+  assert_format "foo.as(T).bar"
+  assert_format "foo &.as(T)"
+  assert_format "foo &.bar.as(T)"
 end

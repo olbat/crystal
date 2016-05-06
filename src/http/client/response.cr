@@ -6,18 +6,16 @@ class HTTP::Client::Response
   getter status_code : Int32
   getter status_message : String
   getter headers : Headers
-  getter! body_io
-  property upgrade_handler
-  @body : String?
+  getter! body_io : IO
   @cookies : Cookies?
 
-  def initialize(@status_code, @body = nil, @headers : Headers = Headers.new, status_message = nil, @version = "HTTP/1.1", @body_io = nil)
+  def initialize(@status_code, @body : String? = nil, @headers : Headers = Headers.new, status_message = nil, @version = "HTTP/1.1", @body_io = nil)
     @status_message = status_message || HTTP.default_status_message_for(@status_code)
 
     if Response.mandatory_body?(@status_code)
       @body = "" unless @body || @body_io
     else
-      if @body || @body_io
+      if (@body || @body_io) && (headers["Content-Length"]? != "0")
         raise ArgumentError.new("status #{status_code} should not have a body")
       end
     end
@@ -31,6 +29,7 @@ class HTTP::Client::Response
     @body
   end
 
+  # Returns true if the response status code is between 200 and 299
   def success?
     (200..299).includes?(status_code)
   end
@@ -65,7 +64,7 @@ class HTTP::Client::Response
     io << @version << " " << @status_code << " " << @status_message << "\r\n"
     cookies = @cookies
     headers = cookies ? cookies.add_response_headers(@headers) : @headers
-    HTTP.serialize_headers_and_body(io, headers, @body || @body_io, @version)
+    HTTP.serialize_headers_and_body(io, headers, @body, @body_io, @version)
   end
 
   # :nodoc:
@@ -76,11 +75,11 @@ class HTTP::Client::Response
     end
   end
 
-  def self.mandatory_body?(status_code)
+  def self.mandatory_body?(status_code) : Bool
     !(status_code / 100 == 1 || status_code == 204 || status_code == 304)
   end
 
-  def self.supports_chunked?(version)
+  def self.supports_chunked?(version) : Bool
     version == "HTTP/1.1"
   end
 

@@ -1,3 +1,6 @@
+require "c/stdio"
+require "c/string"
+
 # Float is the base type of all floating point numbers.
 #
 # There are two floating point types, `Float32` and `Float64`,
@@ -32,6 +35,10 @@
 # ```
 struct Float
   alias Primitive = Float32 | Float64
+
+  def -
+    self.class.zero - self
+  end
 
   def %(other)
     modulo(other)
@@ -70,7 +77,7 @@ struct Float
       raise DivisionByZero.new
     else
       mod = self % other
-      return 0.0 if mod == 0.0
+      return self.class.zero if mod == 0.0
       return mod if self > 0 && other > 0
       return mod if self < 0 && other < 0
 
@@ -97,8 +104,9 @@ struct Float32
   MIN      = -INFINITY
   MAX      = INFINITY
 
-  def -
-    0.0_f32 - self
+  # Returns a `Float32` by invoking `to_f32` on *value*.
+  def self.new(value)
+    value.to_f32
   end
 
   def ceil
@@ -149,8 +157,9 @@ struct Float64
   MIN      = -INFINITY
   MAX      = INFINITY
 
-  def -
-    0.0 - self
+  # Returns a `Float64` by invoking `to_f64` on *value*.
+  def Float64.new(value)
+    value.to_f64
   end
 
   def ceil

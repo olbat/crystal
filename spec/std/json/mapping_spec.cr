@@ -100,6 +100,24 @@ class JSONWithSmallIntegers
   })
 end
 
+class JSONWithTimeEpoch
+  JSON.mapping({
+    value: {type: Time, converter: Time::EpochConverter},
+  })
+end
+
+class JSONWithTimeEpochMillis
+  JSON.mapping({
+    value: {type: Time, converter: Time::EpochMillisConverter},
+  })
+end
+
+class JSONWithRaw
+  JSON.mapping({
+    value: {type: String, converter: String::RawConverter},
+  })
+end
+
 describe "JSON mapping" do
   it "parses person" do
     person = JSONPerson.from_json(%({"name": "John", "age": 30}))
@@ -293,5 +311,42 @@ describe "JSON mapping" do
       json = JsonWithDefaults.from_json(%({}))
       json.h.should eq [1, 2, 3]
     end
+  end
+
+  it "uses Time::EpochConverter" do
+    string = %({"value":1459859781})
+    json = JSONWithTimeEpoch.from_json(string)
+    json.value.should be_a(Time)
+    json.value.should eq(Time.epoch(1459859781))
+    json.to_json.should eq(string)
+  end
+
+  it "uses Time::EpochMillisConverter" do
+    string = %({"value":1459860483856})
+    json = JSONWithTimeEpochMillis.from_json(string)
+    json.value.should be_a(Time)
+    json.value.should eq(Time.epoch_ms(1459860483856))
+    json.to_json.should eq(string)
+  end
+
+  it "parses raw value from int" do
+    string = %({"value":123456789123456789123456789123456789})
+    json = JSONWithRaw.from_json(string)
+    json.value.should eq("123456789123456789123456789123456789")
+    json.to_json.should eq(string)
+  end
+
+  it "parses raw value from float" do
+    string = %({"value":123456789123456789.123456789123456789})
+    json = JSONWithRaw.from_json(string)
+    json.value.should eq("123456789123456789.123456789123456789")
+    json.to_json.should eq(string)
+  end
+
+  it "parses raw value from object" do
+    string = %({"value":[null,true,false,{"x":[1,1.5]}]})
+    json = JSONWithRaw.from_json(string)
+    json.value.should eq(%([null,true,false,{"x":[1,1.5]}]))
+    json.to_json.should eq(string)
   end
 end

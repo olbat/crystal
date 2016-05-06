@@ -15,21 +15,12 @@ module Crystal
 
   class ToSVisitor < Visitor
     @str : IO
-    @indent : Int32
-    @inside_macro : Int32
-    @inside_lib : Bool
-    @inside_struct_or_union : Bool
 
     def initialize(@str = MemoryIO.new)
       @indent = 0
       @inside_macro = 0
       @inside_lib = false
       @inside_struct_or_union = false
-    end
-
-    def visit(node : Primitive)
-      @str << "# primitive: "
-      @str << node.name
     end
 
     def visit(node : Nop)
@@ -52,9 +43,11 @@ module Crystal
     end
 
     def visit(node : SymbolLiteral)
-      @str << ':'
+      visit_symbol_literal_value node.value
+    end
 
-      value = node.value
+    def visit_symbol_literal_value(value : String)
+      @str << ':'
       if Symbol.needs_quotes?(value)
         value.inspect(@str)
       else
@@ -278,10 +271,10 @@ module Crystal
         @str << decorate_call(node, "=")
         @str << " "
         node.args[1].accept self
-      elsif node_obj && !is_alpha(node.name) && node.args.size == 0
+      elsif node_obj && !is_alpha_or_underscore(node.name) && node.args.size == 0
         @str << decorate_call(node, node.name)
         in_parenthesis(need_parens, node_obj)
-      elsif node_obj && !is_alpha(node.name) && node.args.size == 1
+      elsif node_obj && !is_alpha_or_underscore(node.name) && node.args.size == 1
         in_parenthesis(need_parens, node_obj)
 
         @str << " "
@@ -370,7 +363,7 @@ module Crystal
       when Call
         case obj.args.size
         when 0
-          !is_alpha(obj.name)
+          !is_alpha_or_underscore(obj.name)
         else
           true
         end
@@ -415,11 +408,6 @@ module Crystal
 
     def visit(node : MacroId)
       @str << node.value
-      false
-    end
-
-    def visit(node : TypeNode)
-      node.type.to_s(@str)
       false
     end
 
@@ -471,6 +459,10 @@ module Crystal
       string[0].alpha?
     end
 
+    def is_alpha_or_underscore(string)
+      string[0].alpha? || string[0] == '_'
+    end
+
     def visit(node : Assign)
       node.target.accept self
       @str << " = "
@@ -518,10 +510,6 @@ module Crystal
 
     def visit(node : Var)
       @str << decorate_var(node, node.name)
-    end
-
-    def visit(node : MetaVar)
-      @str << node.name
     end
 
     def visit(node : FunLiteral)
@@ -608,6 +596,7 @@ module Crystal
         @str << "("
         node.args.each_with_index do |arg, i|
           @str << ", " if i > 0
+          @str << "*" if i == node.splat_index
           arg.accept self
         end
         if block_arg = node.block_arg
@@ -713,10 +702,7 @@ module Crystal
       else
         @str << "?"
       end
-      if type = node.type?
-        @str << " : "
-        TypeNode.new(type).accept(self)
-      elsif restriction = node.restriction
+      if restriction = node.restriction
         @str << " : "
         restriction.accept self
       end
@@ -799,12 +785,6 @@ module Crystal
         @str << " | " if i > 0
         ident.accept self
       end
-      false
-    end
-
-    def visit(node : Virtual)
-      node.name.accept self
-      @str << "+"
       false
     end
 
@@ -896,6 +876,10 @@ module Crystal
       node.var.accept self
       @str << " : "
       node.declared_type.accept self
+      if value = node.value
+        @str << " = "
+        value.accept self
+      end
       false
     end
 
@@ -959,10 +943,6 @@ module Crystal
       @str << node.modifier.to_s.downcase
       @str << ' '
       node.exp.accept self
-      false
-    end
-
-    def visit(node : TypeFilteredNode)
       false
     end
 
@@ -1145,7 +1125,9 @@ module Crystal
 
     def visit(node : RespondsTo)
       node.obj.accept self
-      @str << ".responds_to?(" << node.name << ")"
+      @str << ".responds_to?("
+      visit_symbol_literal_value node.name
+      @str << ")"
       false
     end
 

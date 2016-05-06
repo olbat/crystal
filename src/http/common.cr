@@ -21,7 +21,11 @@ module HTTP
         if body_type.prohibited?
           body = nil
         elsif content_length = headers["Content-Length"]?
-          body = FixedLengthContent.new(io, content_length.to_u64)
+          content_length = content_length.to_u64
+          if content_length != 0
+            # Don't create IO for Content-Length == 0
+            body = FixedLengthContent.new(io, content_length)
+          end
         elsif headers["Transfer-Encoding"]? == "chunked"
           body = ChunkedContent.new(io)
         elsif body_type.mandatory?
@@ -101,21 +105,23 @@ module HTTP
   end
 
   # :nodoc:
-  def self.serialize_headers_and_body(io, headers, body, version)
+  def self.serialize_headers_and_body(io, headers, body, body_io, version)
     # prepare either chunked response headers if protocol supports it
     # or consume the io to get the Content-Length header
-    if body
-      if body.is_a?(IO)
+    unless body
+      if body_io
         if Client::Response.supports_chunked?(version)
           headers["Transfer-Encoding"] = "chunked"
+          body = nil
         else
-          body = body.gets_to_end
+          body = body_io.gets_to_end
+          body_io = nil
         end
       end
+    end
 
-      unless body.is_a?(IO)
-        headers["Content-Length"] = body.bytesize.to_s
-      end
+    if body
+      headers["Content-Length"] = body.bytesize.to_s
     end
 
     headers.each do |name, values|
@@ -127,18 +133,18 @@ module HTTP
     io << "\r\n"
 
     if body
-      if body.is_a?(IO)
-        buf = uninitialized UInt8[8192]
-        while (buf_length = body.read(buf.to_slice)) > 0
-          buf_length.to_s(16, io)
-          io << "\r\n"
-          io.write(buf.to_slice[0, buf_length])
-          io << "\r\n"
-        end
-        io << "0\r\n\r\n"
-      else
-        io << body
+      io << body
+    end
+
+    if body_io
+      buf = uninitialized UInt8[8192]
+      while (buf_length = body_io.read(buf.to_slice)) > 0
+        buf_length.to_s(16, io)
+        io << "\r\n"
+        io.write(buf.to_slice[0, buf_length])
+        io << "\r\n"
       end
+      io << "0\r\n\r\n"
     end
   end
 
@@ -171,23 +177,26 @@ module HTTP
     # Avoid allocating an array for the split if there's no ';'
     if content_type.index(';')
       pieces = content_type.split(';')
+      content_type = pieces[0].strip
       (1...pieces.size).each do |i|
         piece = pieces[i]
         eq_index = piece.index('=')
         if eq_index
           key = piece[0...eq_index].strip
-          if key
+          if key == "charset"
             value = piece[eq_index + 1..-1].strip
-            return ComputedContentTypeHeader.new(pieces[0].strip, value)
+            return ComputedContentTypeHeader.new(content_type, value)
           end
         end
       end
+    else
+      content_type = content_type.strip
     end
 
     ComputedContentTypeHeader.new(content_type.strip, nil)
   end
 
-  def self.parse_time(time_str : String)
+  def self.parse_time(time_str : String) : Time?
     DATE_PATTERNS.each do |pattern|
       begin
         return Time.parse(time_str, pattern)
@@ -204,7 +213,7 @@ module HTTP
   end
 
   # Returns the default status message of the given HTTP status code.
-  def self.default_status_message_for(status_code : Int)
+  def self.default_status_message_for(status_code : Int) : String
     case status_code
     when 100 then "Continue"
     when 101 then "Switching Protocols"

@@ -143,6 +143,14 @@ module Crystal
       end
     end
 
+    def self.merge!(types_or_nodes)
+      merge(types_or_nodes).not_nil!
+    end
+
+    def self.merge!(type1 : Type, type2 : Type)
+      merge!([type1, type2])
+    end
+
     def common_ancestor(other)
       nil
     end
@@ -170,16 +178,16 @@ module Crystal
 
   class ClassType
     def common_ancestor(other : ClassType)
+      # This discards Object, Reference and Value
       if depth <= 1
         return nil
       end
 
-      if self == other
-        return self
-      end
-
-      if struct?
+      case self
+      when program.struct, program.int, program.float
         return nil
+      when other
+        return self
       end
 
       if depth == other.depth

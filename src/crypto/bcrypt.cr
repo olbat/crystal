@@ -46,7 +46,7 @@ class Crypto::Bcrypt
     0x64657253, 0x63727944, 0x6f756274,
   ]
 
-  def self.hash_secret(password, cost = DEFAULT_COST)
+  def self.hash_secret(password, cost = DEFAULT_COST) : String
     passwordb = password.to_unsafe.to_slice(password.bytesize + 1) # include leading 0
     saltb = SecureRandom.random_bytes(SALT_SIZE)
     new(passwordb, saltb, cost).to_s
@@ -62,7 +62,7 @@ class Crypto::Bcrypt
   getter salt : Slice(UInt8)
   getter cost : Int32
 
-  def initialize(@password, @salt, @cost = DEFAULT_COST)
+  def initialize(@password : Slice(UInt8), @salt : Slice(UInt8), @cost = DEFAULT_COST)
     raise Error.new("Invalid cost") unless COST_RANGE.includes?(cost)
     raise Error.new("Invalid salt size") unless salt.size == SALT_SIZE
     raise Error.new("Invalid password size") unless PASSWORD_RANGE.includes?(password.size)

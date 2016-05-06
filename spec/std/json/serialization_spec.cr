@@ -1,5 +1,13 @@
 require "spec"
 require "json"
+require "big"
+require "big/json"
+
+enum JSONSpecEnum
+  Zero
+  One
+  Two
+end
 
 describe "JSON serialization" do
   describe "from_json" do
@@ -58,6 +66,41 @@ describe "JSON serialization" do
       tuple.should eq({1, "hello"})
       tuple.should be_a(Tuple(Int32, String))
     end
+
+    it "does for BigInt" do
+      big = BigInt.from_json("123456789123456789123456789123456789123456789")
+      big.should be_a(BigInt)
+      big.should eq(BigInt.new("123456789123456789123456789123456789123456789"))
+    end
+
+    it "does for BigFloat" do
+      big = BigFloat.from_json("1234.567891011121314")
+      big.should be_a(BigFloat)
+      big.should eq(BigFloat.new("1234.567891011121314"))
+    end
+
+    it "does for BigFloat from int" do
+      big = BigFloat.from_json("1234")
+      big.should be_a(BigFloat)
+      big.should eq(BigFloat.new("1234"))
+    end
+
+    # TODO: uncomment after 0.15.0
+    # it "does for Enum with number" do
+    #   JSONSpecEnum.from_json("1").should eq(JSONSpecEnum::One)
+
+    #   expect_raises do
+    #     JSONSpecEnum.from_json("3")
+    #   end
+    # end
+
+    # it "does for Enum with string" do
+    #   JSONSpecEnum.from_json(%("One")).should eq(JSONSpecEnum::One)
+
+    #   expect_raises do
+    #     JSONSpecEnum.from_json(%("Three"))
+    #   end
+    # end
   end
 
   describe "to_json" do
@@ -120,6 +163,20 @@ describe "JSON serialization" do
 
     it "does for Tuple" do
       {1, "hello"}.to_json.should eq(%([1,"hello"]))
+    end
+
+    it "does for Enum" do
+      JSONSpecEnum::One.to_json.should eq("1")
+    end
+
+    it "does for BigInt" do
+      big = BigInt.new("123456789123456789123456789123456789123456789")
+      big.to_json.should eq("123456789123456789123456789123456789123456789")
+    end
+
+    it "does for BigFloat" do
+      big = BigFloat.new("1234.567891011121314")
+      big.to_json.should eq("1234.567891011121314")
     end
   end
 

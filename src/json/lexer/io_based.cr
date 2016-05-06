@@ -1,11 +1,7 @@
 # :nodoc:
 class JSON::Lexer::IOBased < JSON::Lexer
-  @io : IO
-  @current_char : Char
-
-  def initialize(io)
+  def initialize(@io : IO)
     super()
-    @io = io
     @current_char = @io.read_char || '\0'
   end
 
@@ -17,5 +13,17 @@ class JSON::Lexer::IOBased < JSON::Lexer
 
   private def consume_string
     consume_string_with_buffer
+  end
+
+  private def number_start
+    @buffer.clear
+  end
+
+  private def append_number_char
+    @buffer << current_char
+  end
+
+  private def number_end
+    @token.raw_value = @buffer.to_s
   end
 end

@@ -1,13 +1,6 @@
 require "json"
 require "./command/*"
 
-module Crystal
-  def self.tempfile(basename)
-    Dir.mkdir_p Config.cache_dir
-    File.join(Config.cache_dir, "crystal-run-#{basename}.tmp")
-  end
-end
-
 class Crystal::Command
   USAGE = <<-USAGE
     Usage: crystal [command] [switches] [program file] [--] [arguments]
@@ -45,13 +38,9 @@ class Crystal::Command
     new(options).run
   end
 
-  private getter options : Array(String)
+  private getter options
 
-  @color : Bool
-  @config : CompilerConfig?
-  @format : String?
-
-  def initialize(@options)
+  def initialize(@options : Array(String))
     @color = true
   end
 
@@ -83,7 +72,7 @@ class Crystal::Command
         eval
       when "run".starts_with?(command)
         options.shift
-        run_command
+        run_command(single_file: false)
       when "spec/".starts_with?(command)
         options.shift
         run_specs
@@ -98,7 +87,7 @@ class Crystal::Command
         exit
       else
         if File.file?(command)
-          run_command
+          run_command(single_file: true)
         else
           error "unknown command: #{command}"
         end
@@ -182,8 +171,9 @@ class Crystal::Command
     end
 
     vars = {
-      "CRYSTAL_PATH":    CrystalPath::DEFAULT_PATH,
-      "CRYSTAL_VERSION": Config::VERSION || "",
+      "CRYSTAL_CACHE_DIR": CacheDir.instance.dir,
+      "CRYSTAL_PATH":      CrystalPath.default_path,
+      "CRYSTAL_VERSION":   Config::VERSION || "",
     }
 
     if ARGV.empty?
@@ -222,7 +212,7 @@ class Crystal::Command
   end
 
   private def hierarchy
-    config, result = compile_no_codegen "tool hierarchy", hierarchy: true
+    config, result = compile_no_codegen "tool hierarchy", hierarchy: true, top_level: true
     Crystal.print_hierarchy result.program, config.hierarchy_exp
   end
 
@@ -264,8 +254,8 @@ class Crystal::Command
     end
   end
 
-  private def run_command
-    config = create_compiler "run", run: true
+  private def run_command(single_file = false)
+    config = create_compiler "run", run: true, single_file: single_file
     if config.specified_output
       config.compile
       return
@@ -320,8 +310,10 @@ class Crystal::Command
       end
     end
 
+    source_filename = File.expand_path("spec")
+
     source = target_filenames.map { |filename| %(require "./#{filename}") }.join("\n")
-    sources = [Compiler::Source.new("spec", source)]
+    sources = [Compiler::Source.new(source_filename, source)]
 
     output_filename = tempfile "spec"
 
@@ -352,11 +344,9 @@ class Crystal::Command
 
     included_dirs << File.expand_path("./src")
 
-    output_filename = tempfile "docs"
-
     compiler = Compiler.new
     compiler.wants_doc = true
-    result = compiler.compile sources, output_filename
+    result = compiler.type_top_level sources
     Crystal.generate_docs result.program, included_dirs
   end
 
@@ -398,11 +388,12 @@ class Crystal::Command
     server.start
   end
 
-  private def compile_no_codegen(command, wants_doc = false, hierarchy = false, cursor_command = false)
+  private def compile_no_codegen(command, wants_doc = false, hierarchy = false, cursor_command = false, top_level = false)
     config = create_compiler command, no_codegen: true, hierarchy: hierarchy, cursor_command: cursor_command
     config.compiler.no_codegen = true
     config.compiler.wants_doc = wants_doc
-    {config, config.compile}
+    result = top_level ? config.type_top_level : config.compile
+    {config, result}
   end
 
   private def execute(output_filename, run_args)
@@ -415,7 +406,7 @@ class Crystal::Command
       end
       status = $?
     ensure
-      File.delete output_filename
+      File.delete(output_filename) rescue nil
     end
 
     if status.normal_exit?
@@ -452,9 +443,15 @@ class Crystal::Command
       compiler.original_output_filename = original_output_filename
       compiler.compile sources, output_filename
     end
+
+    def type_top_level
+      compiler.type_top_level sources
+    end
   end
 
-  private def create_compiler(command, no_codegen = false, run = false, hierarchy = false, cursor_command = false)
+  private def create_compiler(command, no_codegen = false, run = false,
+                              hierarchy = false, cursor_command = false,
+                              single_file = false)
     compiler = Compiler.new
     link_flags = [] of String
     opt_filenames = nil
@@ -575,6 +572,11 @@ class Crystal::Command
     output_filename = opt_output_filename
     filenames = opt_filenames.not_nil!
     arguments = opt_arguments.not_nil!
+
+    if single_file && filenames.size > 1
+      arguments = filenames[1..-1] + arguments
+      filenames = [filenames[0]]
+    end
 
     if filenames.size == 0 || (cursor_command && cursor_location.nil?)
       puts option_parser

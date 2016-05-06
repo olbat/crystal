@@ -3,18 +3,12 @@ module Crystal
     getter mod : Program
     property types : Array(Type)
 
-    @exp_nest : Int32
-    @attributes : Array(Attribute)?
-    @lib_def_pass : Int32
-    @in_type_args : Int32
-    @block_nest : Int32
-    @vars : MetaVars
     @free_vars : Hash(String, Type)?
     @type_lookup : Type?
     @scope : Type?
     @typed_def : Def?
-    @in_is_a : Bool
     @last_doc : String?
+    @block : Block?
 
     def initialize(@mod, @vars = MetaVars.new)
       @types = [@mod] of Type
@@ -36,6 +30,11 @@ module Crystal
       type = resolve_ident(node)
       case type
       when Const
+        existing = @mod.class_var_and_const_being_typed.find &.same?(type)
+        if existing
+          raise_recursive_dependency node, type
+        end
+
         if !type.value.type? && !type.visited?
           type.visited = true
 
@@ -45,13 +44,18 @@ module Crystal
           type_visitor.types = type.scope_types
           type_visitor.scope = type.scope
 
+          @mod.class_var_and_const_being_typed.push type
           type.value.accept type_visitor
+          @mod.class_var_and_const_being_typed.pop
+
           type.vars = const_def.vars
           type.visitor = self
+          type.used = true
+          @mod.class_var_and_const_initializers << type
         end
+
         node.target_const = type
         node.bind_to type.value
-        type.used = true
       when Type
         if type.is_a?(AliasType) && @in_type_args == 0 && !type.aliased_type?
           if type.value_processed?
@@ -69,7 +73,27 @@ module Crystal
       end
     end
 
-    def end_visit(node : Fun)
+    private def raise_recursive_dependency(node, const_or_class_var)
+      msg = mod.class_var_and_const_being_typed.join(" -> ") { |x| const_or_class_var_name(x) }
+      if const_or_class_var.is_a?(Const)
+        node.raise "recursive dependency of constant #{const_or_class_var}: #{msg} -> #{const_or_class_var_name(const_or_class_var)}"
+      else
+        node.raise "recursive dependency of class var #{const_or_class_var_name(const_or_class_var)}: #{msg} -> #{const_or_class_var_name(const_or_class_var)}"
+      end
+    end
+
+    private def const_or_class_var_name(const_or_class_var)
+      if const_or_class_var.is_a?(Const)
+        const_or_class_var.to_s
+      else
+        "#{const_or_class_var.owner}::#{const_or_class_var.name}"
+      end
+    end
+
+    def visit(node : Fun)
+      node.inputs.try &.each &.accept(self)
+      node.output.try &.accept(self)
+
       if inputs = node.inputs
         types = inputs.map &.type.instance_type.virtual_type
       else
@@ -83,9 +107,13 @@ module Crystal
       end
 
       node.type = mod.fun_of(types)
+
+      false
     end
 
-    def end_visit(node : Union)
+    def visit(node : Union)
+      node.types.each &.accept self
+
       old_in_is_a, @in_is_a = @in_is_a, false
 
       types = node.types.map do |subtype|
@@ -103,14 +131,14 @@ module Crystal
       else
         node.type = @mod.type_merge(types)
       end
+
+      false
     end
 
-    def end_visit(node : Virtual)
-      node.type = check_type_in_type_args node.name.type.instance_type.virtual_type
-    end
-
-    def end_visit(node : Metaclass)
-      node.type = node.name.type.virtual_type!.metaclass
+    def visit(node : Metaclass)
+      node.name.accept self
+      node.type = node.name.type.virtual_type.metaclass
+      false
     end
 
     def visit(node : Self)
@@ -264,7 +292,9 @@ module Crystal
     end
 
     def visit_any(node)
-      @exp_nest += 1 if nesting_exp?(node)
+      if nesting_exp?(node)
+        @exp_nest += 1
+      end
 
       true
     end
@@ -295,7 +325,7 @@ module Crystal
       case node
       when Expressions, LibDef, ClassDef, ModuleDef, FunDef, Def, Macro,
            Alias, Include, Extend, EnumDef, VisibilityModifier, MacroFor, MacroIf, MacroExpression,
-           FileNode
+           FileNode, TypeDeclaration
         false
       else
         true
@@ -442,9 +472,9 @@ module Crystal
 
           expanded = expand_macro(hook.macro, node) do
             if call
-              @mod.expand_macro hook.macro, call, current_type.instance_type
+              @mod.expand_macro hook.macro, call, current_type.instance_type, @type_lookup
             else
-              @mod.expand_macro hook.macro.body, current_type.instance_type
+              @mod.expand_macro hook.macro.body, current_type.instance_type, @type_lookup
             end
           end
 
@@ -479,7 +509,7 @@ module Crystal
         end
         return false unless macro_scope.is_a?(Type)
 
-        the_macro = macro_scope.metaclass.lookup_macro(node.name, node.args.size, node.named_args)
+        the_macro = macro_scope.metaclass.lookup_macro(node.name, node.args, node.named_args)
       when Nil
         return false if node.name == "super" || node.name == "previous_def"
         the_macro = node.lookup_macro
@@ -504,7 +534,7 @@ module Crystal
       generated_nodes = expand_macro(the_macro, node) do
         old_args = node.args
         node.args = args
-        expanded = @mod.expand_macro the_macro, node, expansion_scope
+        expanded = @mod.expand_macro the_macro, node, expansion_scope, @type_lookup
         node.args = old_args
         expanded
       end
@@ -591,7 +621,7 @@ module Crystal
       the_macro = Macro.new("macro_#{node.object_id}", [] of Arg, node).at(node.location)
 
       generated_nodes = expand_macro(the_macro, node) do
-        @mod.expand_macro node, (@scope || current_type), @free_vars
+        @mod.expand_macro node, (@scope || current_type), @type_lookup, @free_vars
       end
 
       node.expanded = generated_nodes
@@ -607,8 +637,10 @@ module Crystal
             attr.raise "illegal attribute for #{desc}, valid attributes are: #{valid_attributes.join ", "}"
           end
 
-          if !attr.args.empty? || attr.named_args
-            attr.raise "#{attr.name} attribute can't receive arguments"
+          if attr.name != "Primitive"
+            if !attr.args.empty? || attr.named_args
+              attr.raise "#{attr.name} attribute can't receive arguments"
+            end
           end
         end
         node.attributes = attributes
@@ -782,22 +814,51 @@ module Crystal
       type
     end
 
-    def lookup_class_var(node, bind_to_nil_if_non_existent = true)
-      scope = (@scope || current_type).class_var_owner
-      if scope.is_a?(GenericClassType) || scope.is_a?(GenericModuleType)
-        node.raise "can't use class variable with generic types, only with generic types instances"
+    def check_declare_var_type(node, declared_type)
+      type = declared_type.instance_type
+
+      if type.is_a?(GenericClassType)
+        node.raise "can't declare variable of generic non-instantiated type #{type}"
       end
 
-      class_var_owner = scope as ClassVarContainer
+      Crystal.check_type_allowed_in_generics(node, type, "can't use #{type} as a Proc argument type")
 
-      var = class_var_owner.lookup_class_var node.name
-      var.bind_to mod.nil_var if bind_to_nil_if_non_existent && !var.dependencies?
+      declared_type
+    end
 
-      node.owner = class_var_owner
-      node.var = var
-      node.class_scope = !@typed_def
+    def class_var_owner(node)
+      scope = (@scope || current_type).class_var_owner
+      if scope.is_a?(Program)
+        node.raise "can't use class variables at the top level"
+      end
 
+      if scope.is_a?(GenericClassType) || scope.is_a?(GenericModuleType)
+        node.raise "can't use class variables in generic types"
+      end
+
+      scope as ClassVarContainer
+    end
+
+    def lookup_class_var(node)
+      class_var_owner = class_var_owner(node)
+      var = class_var_owner.class_vars[node.name]?
+      unless var
+        undefined_class_variable(node, class_var_owner)
+      end
       var
+    end
+
+    def undefined_class_variable(node, owner)
+      similar_name = lookup_similar_class_variable_name(node, owner)
+      @mod.undefined_class_variable(node, owner, similar_name)
+    end
+
+    def lookup_similar_class_variable_name(node, owner)
+      Levenshtein.find(node.name) do |finder|
+        owner.class_vars.each_key do |name|
+          finder.test(name)
+        end
+      end
     end
 
     def inside_exp?

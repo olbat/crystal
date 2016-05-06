@@ -20,8 +20,6 @@ struct BitArray
   # The number of bits the BitArray stores
   getter size : Int32
 
-  @bits : UInt32*
-
   # Create a new BitArray of `size` bits.
   #
   # `initial` optionally sets the starting value, true or false, for all bits
@@ -109,6 +107,11 @@ struct BitArray
       io << (value ? "1" : "0")
     end
     io << "]"
+  end
+
+  # ditto
+  def inspect(io : IO)
+    to_s(io)
   end
 
   # Returns a Slice(UInt8) able to read and write bytes from a buffer.

@@ -1,3 +1,5 @@
+require "c/sys/mman"
+
 @[NoInline]
 fun get_stack_top : Void*
   dummy = uninitialized Int32
@@ -13,12 +15,10 @@ class Fiber
   @@last_fiber : Fiber?
   @@last_fiber = nil
 
-  @@stack_pool : Array(Void*)
   @@stack_pool = [] of Void*
 
   @stack : Void*
   @resume_event : Event::Event?
-  @proc : ->
   protected property stack_top : Void*
   protected property stack_bottom : Void*
   protected property next_fiber : Fiber?
@@ -96,9 +96,12 @@ class Fiber
   def run
     @proc.call
   rescue ex
-    STDERR.puts "Unhandled exception:"
-    ex.inspect_with_backtrace STDERR
-    STDERR.flush
+    # Don't use STDERR here because we are at a lower level than that
+    msg = String.build do |io|
+      io.puts "Unhandled exception:"
+      ex.inspect_with_backtrace io
+    end
+    LibC.write(2, pointerof(msg) as Void*, msg.bytesize)
   ensure
     @@stack_pool << @stack
 
@@ -188,18 +191,18 @@ class Fiber
     LibGC.push_all_eager @stack_top, @stack_bottom
   end
 
-  @@root : Fiber
   @@root = new
 
-  def self.root
+  def self.root : self
     @@root
   end
 
-  @[ThreadLocal]
-  @@current = root
+  # TODO: Boehm GC doesn't scan thread local vars, so we can't use it yet
+  # @[ThreadLocal]
   @@current : Fiber
+  @@current = root
 
-  def self.current
+  def self.current : self
     @@current
   end
 
@@ -208,7 +211,6 @@ class Fiber
     block
   end
 
-  @@prev_push_other_roots : ->
   @@prev_push_other_roots = LibGC.get_push_other_roots
 
   # This will push all fibers stacks whenever the GC wants to collect some memory

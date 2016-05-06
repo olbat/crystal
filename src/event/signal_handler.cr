@@ -1,3 +1,6 @@
+require "c/signal"
+require "c/unistd"
+
 # :nodoc:
 # Singleton that runs Signal events (libevent2) in it's own Fiber.
 class Event::SignalHandler
@@ -19,13 +22,10 @@ class Event::SignalHandler
     @@instance = nil
   end
 
-  @@instance : Event::SignalHandler?
-
   private def self.instance
     @@instance ||= new
   end
 
-  @callbacks : Hash(Signal, (Signal ->))
   @read_pipe : IO::FileDescriptor
   @write_pipe : IO::FileDescriptor
 
@@ -42,13 +42,9 @@ class Event::SignalHandler
   # :nodoc:
   def run
     read_pipe = @read_pipe
-    sig = 0
-    slice = Slice(UInt8).new pointerof(sig) as Pointer(UInt8), sizeof(typeof(sig))
 
     loop do
-      bytes = read_pipe.read slice
-      break if bytes == 0
-      raise "bad read #{bytes} : #{slice.size}" if bytes != slice.size
+      sig = read_pipe.read_bytes(Int32)
       handle_signal Signal.new(sig)
     end
   end
@@ -68,9 +64,8 @@ class Event::SignalHandler
   def add_handler(signal : Signal, callback)
     @callbacks[signal] = callback
 
-    LibC.signal signal.value, ->(sig) do
-      slice = Slice(UInt8).new pointerof(sig) as Pointer(UInt8), sizeof(typeof(sig))
-      @@write_pipe.not_nil!.write slice
+    LibC.signal signal.value, ->(sig : Int32) do
+      @@write_pipe.not_nil!.write_bytes sig
       nil
     end
   end

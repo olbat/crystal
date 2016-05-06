@@ -8,7 +8,7 @@ module Levenshtein
   # levenshtein("こんにちは", "こんちは")           # => 1
   # levensthein("hey", "hey")              # => 0
   # ```
-  def self.distance(string1 : String, string2 : String)
+  def self.distance(string1 : String, string2 : String) : Int32
     return 0 if string1 == string2
 
     s = string1.chars
@@ -59,9 +59,7 @@ module Levenshtein
       value : String,
       distance : Int32
 
-    @target : String
     @tolerance : Int32
-    @best_entry : Entry?
 
     def initialize(@target : String, tolerance : Int? = nil)
       @tolerance = tolerance || (target.size / 5.0).ceil.to_i

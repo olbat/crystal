@@ -97,42 +97,21 @@ module Crystal
     record Handler, node : ExceptionHandler, context : Context
     record StringKey, mod : LLVM::Module, string : String
 
-    @mod : Program
-    @node : ASTNode
-    @single_module : Bool
-    @debug : Bool
-    @main_mod : LLVM::Module
     @abi : LLVM::ABI
-    @llvm_id : LLVMId
     @main_ret_type : Type
-    @di_builders : Hash(LLVM::Module, LLVM::DIBuilder)?
-    @fun_metadatas : Hash(LLVM::Function, LibLLVMExt::Metadata)?
     @argc : LLVM::Value
     @argv : LLVM::Value
-    @dbg_kind : UInt32
-    @types_to_modules : Hash(Type, LLVM::Module)
-    @in_lib : Bool
-    @strings : Hash(StringKey, LLVM::Value)
-    @symbols : Hash(String, Int32)
-    @symbol_table_values : Array(LLVM::Value)
-    @fun_literal_count : Int32
-    @needs_value : Bool
     @empty_md_list : LLVM::Value
-    @unused_fun_defs : Array(FunDef)
-    @proc_counts : Hash(String, Int32)
-    @node_ensure_exception_handlers : Hash(UInt64, Handler)
-    @ensure_exception_handlers : Array(Handler)?
     @rescue_block : LLVM::BasicBlock?
-    @main_scopes : Hash({String, String}, LibLLVMExt::Metadata)?
     @malloc_fun : LLVM::Function?
-    @debug_types : Hash(Type, LibLLVMExt::Metadata?)?
     @sret_value : LLVM::Value?
     @cant_pass_closure_to_c_exception_call : Call?
     @realloc_fun : LLVM::Function?
 
-    def initialize(@mod, @node, single_module = false, @debug = false, @llvm_mod = LLVM::Module.new("main_module"), expose_crystal_main = true)
+    def initialize(@mod : Program, @node : ASTNode, single_module = false, debug = false, @llvm_mod = LLVM::Module.new("main_module"), expose_crystal_main = true)
       @main_mod = @llvm_mod
       @single_module = !!single_module
+      @debug = !!debug
       @abi = @mod.target_machine.abi
       @llvm_typer = LLVMTyper.new(@mod)
       @llvm_id = LLVMId.new(@mod)
@@ -190,16 +169,46 @@ module Crystal
       @unused_fun_defs = [] of FunDef
       @proc_counts = Hash(String, Int32).new(0)
 
-      @node_ensure_exception_handlers = {} of typeof(object_id) => Handler
+      @node_ensure_exception_handlers = {} of UInt64 => Handler
 
       # We need to define __crystal_malloc and __crystal_realloc as soon as possible,
       # to avoid some memory being allocated with plain malloc.
       codgen_well_known_functions @node
 
-      alloca_vars @mod.vars, @mod
+      initialize_class_vars_and_consts
 
-      initialize_const(@mod.types["ARGC_UNSAFE"] as Const)
-      initialize_const(@mod.types["ARGV_UNSAFE"] as Const)
+      alloca_vars @mod.vars, @mod
+    end
+
+    def initialize_class_vars_and_consts
+      @mod.class_var_and_const_initializers.each do |initializer|
+        if initializer.is_a?(Const)
+          initialize_const(initializer)
+        else
+          initialize_class_var(initializer)
+        end
+      end
+    end
+
+    def initialize_class_var(initializer)
+      alloca_vars initializer.meta_vars
+
+      accept initializer.node
+      last = @last
+
+      class_var = initializer.owner.class_vars[initializer.name]
+
+      if last.constant? &&
+         !class_var.thread_local? &&
+         (class_var.type == @mod.nil || !class_var.type.includes_type?(@mod.nil)) &&
+         class_var.type == initializer.node.type
+        # If a class variable starts with a constant value, we just initialize
+        # it with it instead of initializing it with null and then doing an assignment
+        get_global class_var_global_name(class_var), class_var.type, class_var, last
+      else
+        global = get_global class_var_global_name(class_var), class_var.type, class_var
+        assign global, class_var.type, initializer.node.type, last
+      end
     end
 
     def wrap_builder(builder)
@@ -280,6 +289,10 @@ module Crystal
         mod.dump if dump_all_llvm || name =~ dump_llvm_regex
         mod.verify if env_verify
       end
+    end
+
+    def visit(node : Attribute)
+      false
     end
 
     def visit(node : FunDef)
@@ -384,9 +397,9 @@ module Crystal
               when InstanceVar
                 instance_var_ptr (context.type.remove_typedef as InstanceVarContainer), node_exp.name, llvm_self_ptr
               when ClassVar
-                get_global node_exp, class_var_global_name(node_exp), node_exp.type, node_exp.var
+                get_global class_var_global_name(node_exp.var), node_exp.type, node_exp.var
               when Global
-                get_global node_exp, node_exp.name, node_exp.type, node_exp.var
+                get_global node_exp.name, node_exp.type, node_exp.var
               when Path
                 accept(node_exp)
                 global_name = node_exp.target_const.not_nil!.llvm_name
@@ -434,7 +447,7 @@ module Crystal
       if location && (type = node.type?)
         proc_name = true
         filename = location.filename as String
-        fun_literal_name = Crystal.safe_mangling("~proc#{type}@#{Crystal.relative_filename(filename)}:#{location.line_number}")
+        fun_literal_name = Crystal.safe_mangling(@mod, "~proc#{type}@#{Crystal.relative_filename(filename)}:#{location.line_number}")
       else
         proc_name = false
         fun_literal_name = "~fun_literal"
@@ -561,12 +574,6 @@ module Crystal
     end
 
     def visit(node : EnumDef)
-      if node.created_new_type
-        node.resolved_type.types.each_value do |type|
-          initialize_const(type as Const)
-        end
-      end
-
       node.members.each do |member|
         if member.is_a?(Assign)
           member.accept self
@@ -790,16 +797,14 @@ module Crystal
         accept value
         return false
       when Path
-        # Initialize constants if they are used
-        const = target.target_const.not_nil!
-        initialize_const const
         @last = llvm_nil
         return false
       end
 
       target_type = target.type?
 
-      # This means it's an instance variable initialize of a generic type
+      # This means it's an instance variable initialize of a generic type,
+      # or a class variable initializer
       unless target_type
         return false
       end
@@ -820,9 +825,9 @@ module Crystal
             when InstanceVar
               instance_var_ptr (context.type as InstanceVarContainer), target.name, llvm_self_ptr
             when Global
-              get_global target, target.name, target_type, target.var
+              get_global target.name, target_type, target.var
             when ClassVar
-              get_global target, class_var_global_name(target), target_type, target.var
+              get_global class_var_global_name(target.var), target_type, target.var
             when Var
               # Can't assign void
               return if target.type.void?
@@ -864,15 +869,15 @@ module Crystal
       end
     end
 
-    def get_global(node, name, type, real_var)
+    def get_global(name, type, real_var, initial_value = nil)
       if real_var.thread_local?
         get_thread_local(name, type, real_var)
       else
-        get_global_var(name, type, real_var)
+        get_global_var(name, type, real_var, initial_value)
       end
     end
 
-    def get_global_var(name, type, real_var)
+    def get_global_var(name, type, real_var, initial_value = nil)
       ptr = @llvm_mod.globals[name]?
       unless ptr
         llvm_type = llvm_type(type)
@@ -884,7 +889,7 @@ module Crystal
         ptr.thread_local = true if thread_local
 
         if @llvm_mod == @main_mod
-          ptr.initializer = llvm_type.null
+          ptr.initializer = initial_value || llvm_type.null
         else
           ptr.linkage = LLVM::Linkage::External
 
@@ -892,7 +897,7 @@ module Crystal
           main_ptr = @main_mod.globals[name]?
           unless main_ptr
             main_ptr = @main_mod.globals.add(llvm_type, name)
-            main_ptr.initializer = llvm_type.null
+            main_ptr.initializer = initial_value || llvm_type.null
             main_ptr.thread_local = true if thread_local
           end
         end
@@ -932,13 +937,21 @@ module Crystal
     end
 
     def class_var_global_name(node)
-      "#{node.owner}#{node.var.name.gsub('@', ':')}"
+      "#{node.owner}#{node.name.gsub('@', ':')}"
     end
 
     def visit(node : TypeDeclaration)
       var = node.var
-      if var.is_a?(Var)
+      case var
+      when Var
         declare_var var
+      when Global
+        if value = node.value
+          accept value
+          ptr = get_global var.name, var.type, var.var
+          assign ptr, var.type, value.type, @last
+          return false
+        end
       end
 
       @last = llvm_nil
@@ -975,15 +988,15 @@ module Crystal
     end
 
     def visit(node : Global)
-      read_global node, node.name.to_s, node.type, node.var
+      read_global node.name.to_s, node.type, node.var
     end
 
     def visit(node : ClassVar)
-      read_global node, class_var_global_name(node), node.type, node.var
+      read_global class_var_global_name(node.var), node.type, node.var
     end
 
-    def read_global(node, name, type, real_var)
-      @last = get_global node, name, type, real_var
+    def read_global(name, type, real_var)
+      @last = get_global name, type, real_var
       @last = to_lhs @last, type
     end
 
@@ -996,9 +1009,16 @@ module Crystal
     end
 
     def read_instance_var(node_type, type, name, value)
-      ivar = type.lookup_instance_var(name)
+      ivar = type.lookup_instance_var_with_owner(name).instance_var
       ivar_ptr = instance_var_ptr type, name, value
       @last = downcast ivar_ptr, node_type, ivar.type, false
+      if type.is_a?(CStructOrUnionType)
+        # When reading the instance variable of a C struct or union
+        # we need to convert C functions to Crystal procs. This
+        # can happen for example in Struct#to_s, where all fields
+        # are inspected.
+        @last = check_c_fun node_type, @last
+      end
       false
     end
 
@@ -1143,8 +1163,6 @@ module Crystal
     end
 
     def initialize_const(const, global_name = const.llvm_name)
-      return unless const.used
-
       # It might be that the constant is already declared by not initialized
       global = declare_const(const, global_name)
 
@@ -1444,7 +1462,13 @@ module Crystal
     def llvm_self_ptr
       type = context.type
       if type.is_a?(VirtualType)
-        cast_to llvm_self, type.base_type
+        if type.struct?
+          # A virtual struct doesn't need a cast to a more generic pointer
+          # (it's the union already)
+          llvm_self
+        else
+          cast_to llvm_self, type.base_type
+        end
       else
         llvm_self
       end
@@ -1543,7 +1567,11 @@ module Crystal
       closure_vars = nil
 
       vars.each_value do |var|
-        if var.closure_in?(obj)
+        # It might be the case that a closured variable ends up without
+        # a type, as in #2196, because a branch can't be typed and is
+        # finally removed before codegen. In that case we just assume
+        # Nil as a type.
+        if var.closure_in?(obj) && var.type?
           closure_vars ||= [] of MetaVar
           closure_vars << var
         end
@@ -1810,7 +1838,13 @@ module Crystal
       end
 
       if type.is_a?(VirtualType)
-        pointer = cast_to pointer, type.base_type
+        if type.struct?
+          # For a struct we need to cast the second part of the union to the base type
+          value_ptr = gep(pointer, 0, 1)
+          pointer = bit_cast value_ptr, llvm_type(type.base_type).pointer
+        else
+          pointer = cast_to pointer, type.base_type
+        end
       end
 
       aggregate_index pointer, index
@@ -1858,8 +1892,8 @@ module Crystal
     end
   end
 
-  def self.safe_mangling(name)
-    ifdef windows
+  def self.safe_mangling(program, name)
+    if program.has_flag?("windows")
       name.gsub do |char|
         case char
         when '<', '>', '(', ')', '*', ':', ',', '#', '@', ' '

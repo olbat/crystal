@@ -19,11 +19,6 @@
 class Zlib::Inflate
   include IO
 
-  @input : IO
-  @closed : Bool
-  @sync_close : Bool
-  @stream : LibZ::ZStream
-
   # If `sync_close` is true, closing this IO will close the underlying IO.
   property? sync_close : Bool
 
@@ -53,7 +48,7 @@ class Zlib::Inflate
 
   # Creates an instance of Zlib::Inflate for the gzip format.
   # has written.
-  def self.gzip(input, sync_close : Bool = false)
+  def self.gzip(input, sync_close : Bool = false) : self
     new input, wbits: GZIP, sync_close: sync_close
   end
 

@@ -1,6 +1,4 @@
-lib LibC
-  fun execvp(file : Char*, argv : Char**) : Int
-end
+require "c/unistd"
 
 class Process
   # The standard io configuration of a process:
@@ -42,15 +40,15 @@ class Process
   getter pid : Int32
 
   # A pipe to this process's input. Raises if a pipe wasn't asked when creating the process.
-  getter! input
+  getter! input : IO::FileDescriptor
 
   # A pipe to this process's output. Raises if a pipe wasn't asked when creating the process.
-  getter! output
+  getter! output : IO::FileDescriptor
 
   # A pipe to this process's error. Raises if a pipe wasn't asked when creating the process.
-  getter! error
+  getter! error : IO::FileDescriptor
 
-  @wait_count : Int32
+  @waitpid_future : Concurrent::Future(Process::Status)
 
   # Creates a process, executes it, but doesn't wait for it to complete.
   #
@@ -65,6 +63,10 @@ class Process
       if args
         unless command.includes?(%("${@}"))
           raise ArgumentError.new(%(can't specify arguments in both, command and args without including "${@}" into your command))
+        end
+
+        ifdef freebsd
+          shell_args << ""
         end
 
         shell_args.concat(args)

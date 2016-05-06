@@ -1,11 +1,9 @@
 struct LLVM::PassRegistry
-  def self.instance
+  def self.instance : self
     new LibLLVM.get_global_pass_registry
   end
 
-  @unwrap : LibLLVM::PassRegistryRef
-
-  def initialize(@unwrap)
+  def initialize(@unwrap : LibLLVM::PassRegistryRef)
   end
 
   Inits = %w(core transform_utils scalar_opts obj_c_arc_opts vectorization inst_combine ipo instrumentation analysis ipa code_gen target)

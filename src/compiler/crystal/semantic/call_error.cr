@@ -143,7 +143,7 @@ class Crystal::Call
     end
 
     # If it's on an initialize method and there's a similar method name, it's probably a typo
-    if def_name == "initialize" && (similar_def = owner.lookup_similar_def(def_name, self.args.size, block))
+    if (def_name == "initialize" || def_name == "new") && (similar_def = owner.instance_type.lookup_similar_def("initialize", self.args.size, block))
       inner_msg = colorize("do you maybe have a typo in this '#{similar_def.name}' method?").yellow.bold.to_s
       inner_exception = TypeException.for_node(similar_def, inner_msg)
     end
@@ -155,12 +155,13 @@ class Crystal::Call
       owner_trace = inner_exception
     end
 
-    defs_matchin_args_size = defs.select do |a_def|
+    defs_matching_args_size = defs.select do |a_def|
       min_size, max_size = a_def.min_max_args_sizes
       min_size <= real_args_size <= max_size
     end
 
-    if defs_matchin_args_size.empty?
+    # Don't say "wrong number of arguments" when there are named args in this call
+    if defs_matching_args_size.empty? && !named_args
       all_arguments_sizes = [] of Int32
       min_splat = Int32::MAX
       defs.each do |a_def|
@@ -177,37 +178,39 @@ class Crystal::Call
       all_arguments_sizes.uniq!.sort!
 
       raise(String.build do |str|
-        str << "wrong number of arguments for '"
-        str << full_name(owner, def_name)
-        str << "' (given "
-        str << real_args_size
-        str << ", expected "
+        unless check_single_def_error_message(defs, str)
+          str << "wrong number of arguments for '"
+          str << full_name(owner, def_name)
+          str << "' (given "
+          str << real_args_size
+          str << ", expected "
 
-        # If we have 2, 3, 4, show it as 2..4
-        if all_arguments_sizes.size > 1 && all_arguments_sizes.last - all_arguments_sizes.first == all_arguments_sizes.size - 1
-          str << all_arguments_sizes.first
-          str << ".."
-          str << all_arguments_sizes.last
-        else
-          all_arguments_sizes.join ", ", str
+          # If we have 2, 3, 4, show it as 2..4
+          if all_arguments_sizes.size > 1 && all_arguments_sizes.last - all_arguments_sizes.first == all_arguments_sizes.size - 1
+            str << all_arguments_sizes.first
+            str << ".."
+            str << all_arguments_sizes.last
+          else
+            all_arguments_sizes.join ", ", str
+          end
+
+          str << "+" if min_splat != Int32::MAX
+          str << ")\n"
         end
-
-        str << "+" if min_splat != Int32::MAX
-        str << ")\n"
         str << "Overloads are:"
         append_matches(defs, str)
       end, inner: inner_exception)
     end
 
-    if defs_matchin_args_size.size > 0
-      if block && defs_matchin_args_size.all? { |a_def| !a_def.yields }
+    if defs_matching_args_size.size > 0
+      if block && defs_matching_args_size.all? { |a_def| !a_def.yields }
         raise "'#{full_name(owner, def_name)}' is not expected to be invoked with a block, but a block was given"
-      elsif !block && defs_matchin_args_size.all?(&.yields)
+      elsif !block && defs_matching_args_size.all?(&.yields)
         raise "'#{full_name(owner, def_name)}' is expected to be invoked with a block, but no block was given"
       end
 
       if named_args = @named_args
-        defs_matchin_args_size.each do |a_def|
+        defs_matching_args_size.each do |a_def|
           check_named_args_mismatch owner, named_args, a_def
         end
       end
@@ -220,39 +223,41 @@ class Crystal::Call
     arg_names = [] of Array(String)
 
     message = String.build do |msg|
-      msg << "no overload matches '#{full_name(owner, def_name)}'"
-      unless args.empty?
-        types = [] of Type
-        args.each_with_index do |arg|
-          arg_type = arg.type
+      unless check_single_def_error_message(defs, msg)
+        msg << "no overload matches '#{full_name(owner, def_name)}'"
+        unless args.empty?
+          types = [] of Type
+          args.each_with_index do |arg|
+            arg_type = arg.type
 
-          if arg.is_a?(Splat) && arg_type.is_a?(TupleInstanceType)
-            arg_type.tuple_types.each_with_index do |tuple_type, sub_index|
-              types << tuple_type
+            if arg.is_a?(Splat) && arg_type.is_a?(TupleInstanceType)
+              arg_type.tuple_types.each_with_index do |tuple_type, sub_index|
+                types << tuple_type
+              end
+            else
+              types << arg_type
             end
-          else
-            types << arg_type
+          end
+          msg << " with type"
+          msg << "s" if types.size > 1 || @named_args
+          msg << " "
+          types.join(", ", msg)
+        end
+
+        if named_args = @named_args
+          named_args.each do |named_arg|
+            msg << ", "
+            msg << named_arg.name
+            msg << ": "
+            msg << named_arg.value.type
           end
         end
-        msg << " with type"
-        msg << "s" if types.size > 1 || @named_args
-        msg << " "
-        types.join(", ", msg)
-      end
 
-      if named_args = @named_args
-        named_args.each do |named_arg|
-          msg << ", "
-          msg << named_arg.name
-          msg << ": "
-          msg << named_arg.value.type
+        msg << "\n"
+
+        defs.each do |a_def|
+          arg_names.try &.push a_def.args.map(&.name)
         end
-      end
-
-      msg << "\n"
-
-      defs.each do |a_def|
-        arg_names.try &.push a_def.args.map(&.name)
       end
 
       msg << "Overloads are:"
@@ -268,7 +273,7 @@ class Crystal::Call
             msg << "\nCouldn't find overloads for these types:"
             missing.each_with_index do |missing_types|
               if uniq_arg_names
-                msg << "\n - #{full_name(owner, def_name)}(#{missing_types.map_with_index { |missing_type, i| "#{uniq_arg_names[i]} : #{missing_type}" }.join ", "}"
+                msg << "\n - #{full_name(owner, def_name)}(#{missing_types.map_with_index { |missing_type, i| "#{uniq_arg_names[i]? || "_"} : #{missing_type}" }.join ", "}"
               else
                 msg << "\n - #{full_name(owner, def_name)}(#{missing_types.join ", "}"
               end
@@ -281,6 +286,71 @@ class Crystal::Call
     end
 
     raise message, owner_trace
+  end
+
+  # If there's only one def that could match, and there are named
+  # arguments in this call, we can give a better error message.
+  def check_single_def_error_message(defs, io)
+    named_args = self.named_args
+    return false unless named_args
+    return false unless defs.size == 1
+
+    a_def = defs.first
+
+    if msg = check_named_args_and_splats(a_def, named_args)
+      io << msg
+      io.puts
+      return true
+    end
+
+    false
+  end
+
+  def check_named_args_and_splats(a_def, named_args)
+    if a_def.splat_index
+      if a_def.is_a?(Def)
+        return "can't use named args with methods that have a splat argument"
+      else
+        return "can't use named args with macros that have a splat argument"
+      end
+    end
+
+    # Check if some mandatory arguments are missing
+    mandatory_args = BitArray.new(a_def.args.size)
+    a_def.match(args) do |arg, arg_index, call_arg, call_arg_index|
+      mandatory_args[arg_index] = true
+    end
+
+    named_args.each do |named_arg|
+      found_index = a_def.args.index { |arg| arg.name == named_arg.name }
+      if found_index
+        mandatory_args[found_index] = true
+      end
+    end
+
+    missing_args = [] of String
+    mandatory_args.each_with_index do |value, index|
+      next if value
+
+      arg = a_def.args[index]
+      next if arg.default_value
+
+      missing_args << arg.name
+    end
+
+    case missing_args.size
+    when 0
+      # Nothing
+    when 1
+      return "missing argument: #{missing_args.first}"
+    else
+      return "missing arguments: #{missing_args.join ", "}"
+    end
+
+    return nil
+  end
+
+  def append_error_when_no_matching_defs(owner, def_name, all_arguments_sizes, real_args_size, min_splat, defs, io)
   end
 
   def check_abstract_def_error(owner, matches, defs, def_name)
@@ -401,6 +471,13 @@ class Crystal::Call
       end
     end
 
+    if macros.size == 1 && (named_args = self.named_args)
+      a_macro = macros.first
+      if msg = check_named_args_and_splats(a_macro, named_args)
+        raise msg
+      end
+    end
+
     wrong_number_of_arguments "macro '#{def_name}'", args.size, all_arguments_sizes.join(", ")
   end
 
@@ -468,20 +545,24 @@ class Crystal::Call
     end
   end
 
-  def in_same_namespace?(scope : NamedType, target : NamedType)
+  def in_same_namespace?(scope, target)
     top_container(scope) == top_container(target) ||
       scope.parents.try &.any? { |parent| in_same_namespace?(parent, target) }
   end
 
-  def in_same_namespace?(scope, target)
-    false
-  end
-
   def top_container(type)
-    case container = type.container
+    container = case type
+                when NamedType
+                  type.container
+                when GenericClassInstanceType
+                  type.container
+                else
+                  nil
+                end
+    case container
     when Program
       type
-    when NamedType
+    when NamedType, GenericClassInstanceType
       top_container(container)
     else
       type
@@ -491,14 +572,14 @@ class Crystal::Call
   def check_recursive_splat_call(a_def, args)
     if a_def.splat_index
       current_splat_type = args.values.last.type
-      if previous_splat_type = mod.splat_expansions[a_def]?
+      if previous_splat_type = mod.splat_expansions[a_def.object_id]?
         if current_splat_type.has_in_type_vars?(previous_splat_type)
           raise "recursive splat expansion: #{previous_splat_type}, #{current_splat_type}, ..."
         end
       end
-      mod.splat_expansions[a_def] = current_splat_type
+      mod.splat_expansions[a_def.object_id] = current_splat_type
       yield
-      mod.splat_expansions.delete a_def
+      mod.splat_expansions.delete a_def.object_id
     else
       yield
     end

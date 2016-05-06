@@ -1,26 +1,26 @@
 require "../../spec_helper"
 
 describe "Code gen: class" do
-  it "codegens instace method with allocate" do
-    run("class Foo; def coco; 1; end; end; Foo.allocate.coco").to_i.should eq(1)
-  end
-
-  it "codegens instace method with new and instance var" do
-    run("class Foo; def initialize; @coco = 2; end; def coco; @coco = 1; @coco; end; end; f = Foo.new; f.coco").to_i.should eq(1)
-  end
-
-  it "codegens instace method with new" do
-    run("class Foo; def coco; 1; end; end; Foo.new.coco").to_i.should eq(1)
-  end
-
   it "codegens call to same instance" do
-    run("class Foo; def foo; 1; end; def bar; foo; end; end; Foo.new.bar").to_i.should eq(1)
+    run(%(
+      class Foo
+        def foo
+          1
+        end
+
+        def bar
+          foo
+        end
+      end
+
+      Foo.new.bar
+      )).to_i.should eq(1)
   end
 
   it "codegens instance var" do
     run("
       class Foo
-        def initialize(@coco)
+        def initialize(@coco : Int32)
         end
         def coco
           @coco
@@ -36,7 +36,7 @@ describe "Code gen: class" do
   it "codegens recursive type" do
     run("
       class Foo
-        def next=(@next)
+        def next=(@next : Foo)
         end
       end
 
@@ -66,7 +66,7 @@ describe "Code gen: class" do
   it "codegens new which calls initialize" do
     run("
       class Foo
-        def initialize(value)
+        def initialize(value : Int32)
           @value = value
         end
 
@@ -234,9 +234,9 @@ describe "Code gen: class" do
   it "assigns type to reference union type" do
     run("
       class Foo
-        def initialize(@x)
+        def initialize(@x : Bar)
         end
-        def x=(@x); end
+        def x=(@x : Baz); end
       end
 
       class Bar; end
@@ -276,6 +276,8 @@ describe "Code gen: class" do
   it "codegens initialize with instance var" do
     run(%(
       class Foo
+        @x : Nil
+
         def initialize
           @x
         end
@@ -289,7 +291,7 @@ describe "Code gen: class" do
   it "reads other instance var" do
     run(%(
       class Foo
-        def initialize(@x)
+        def initialize(@x : Int32)
         end
       end
 
@@ -301,7 +303,7 @@ describe "Code gen: class" do
   it "reads a virtual type instance var" do
     run(%(
       class Foo
-        def initialize(@x)
+        def initialize(@x : Int32)
         end
       end
 
@@ -313,7 +315,7 @@ describe "Code gen: class" do
       )).to_i.should eq(1)
   end
 
-  it "runs with nil instance var" do
+  it "runs with nilable instance var" do
     run("
       struct Nil
         def to_i
@@ -325,7 +327,7 @@ describe "Code gen: class" do
         def initialize
         end
 
-        def initialize(@x)
+        def initialize(@x : Int32?)
         end
 
         def x
@@ -347,6 +349,8 @@ describe "Code gen: class" do
       end
 
       class Foo
+        @x : Int32?
+
         def initialize(@x)
         end
 
@@ -357,6 +361,7 @@ describe "Code gen: class" do
 
       class Bar < Foo
         def initialize
+          @x = nil
         end
       end
 
@@ -368,6 +373,8 @@ describe "Code gen: class" do
   it "codegens bug #168" do
     run("
       class A
+        @x : A?
+
         def foo
           x = @x
           if x
@@ -427,7 +434,7 @@ describe "Code gen: class" do
           1
         end
 
-        $x = self.foo
+        $x = self.foo as Int32
       end
 
       $x
@@ -441,7 +448,7 @@ describe "Code gen: class" do
           1
         end
 
-        $x = self
+        $x = self as Foo.class
       end
 
       $x.foo
@@ -500,25 +507,6 @@ describe "Code gen: class" do
       )).to_string.should eq("B")
   end
 
-  it "does to_s for virtual metaclass type (4)" do
-    run(%(
-      require "prelude"
-
-      class Foo; end
-      class A < Foo; end
-      class B < Foo; end
-
-      class Obj(T)
-        def self.t
-          T
-        end
-      end
-
-      t = Obj(Foo+).t
-      t.to_s
-      )).to_string.should eq("Foo")
-  end
-
   it "builds generic class bug" do
     codegen(%(
       abstract class Base
@@ -528,6 +516,8 @@ describe "Code gen: class" do
       end
 
       class Foo(T) < Base
+        @target : Nil
+
         def foo
           @target
         end
@@ -733,5 +723,26 @@ describe "Code gen: class" do
 
       Singleton.get_instance.msg
       )).to_string.should eq("Hello")
+  end
+
+  it "doesn't crash if not using undefined instance variable in superclass" do
+    run(%(
+      class Foo
+        def initialize(@x)
+        end
+
+        def x
+          @x
+        end
+      end
+
+      class Bar < Foo
+        def initialize(@x : Int32)
+        end
+      end
+
+      foo = Bar.new(42)
+      foo.x
+      )).to_i.should eq(42)
   end
 end

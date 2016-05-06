@@ -1,4 +1,4 @@
-def Object.from_json(string_or_io)
+def Object.from_json(string_or_io) : self
   parser = JSON::PullParser.new(string_or_io)
   new parser
 end
@@ -120,9 +120,38 @@ def Tuple.new(pull : JSON::PullParser)
  {% end %}
 end
 
+def Enum.new(pull : JSON::PullParser)
+  case pull.kind
+  when :int
+    from_value(pull.read_int)
+  when :string
+    parse(pull.read_string)
+  else
+    raise "expecting int or string in JSON for #{self.class}, not #{pull.kind}"
+  end
+end
+
 struct Time::Format
   def from_json(pull : JSON::PullParser)
     string = pull.read_string
     parse(string)
+  end
+end
+
+module Time::EpochConverter
+  def self.from_json(value : JSON::PullParser) : Time
+    Time.epoch(value.read_int)
+  end
+end
+
+module Time::EpochMillisConverter
+  def self.from_json(value : JSON::PullParser) : Time
+    Time.epoch_ms(value.read_int)
+  end
+end
+
+module String::RawConverter
+  def self.from_json(value : JSON::PullParser)
+    value.read_raw
   end
 end

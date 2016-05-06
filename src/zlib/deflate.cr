@@ -22,11 +22,6 @@
 class Zlib::Deflate
   include IO
 
-  @output : IO
-  @stream : LibZ::ZStream
-  @closed : Bool
-  @sync_close : Bool
-
   # If `sync_close` is true, closing this IO will close the underlying IO.
   property? sync_close : Bool
 
@@ -62,7 +57,7 @@ class Zlib::Deflate
 
   # Creates an instance of Zlib::Deflate for the gzip format. `close` must be invoked after all data
   # has written.
-  def self.gzip(output, sync_close : Bool = false)
+  def self.gzip(output, sync_close : Bool = false) : self
     new output, wbits: GZIP, sync_close: sync_close
   end
 

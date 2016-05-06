@@ -10,9 +10,6 @@ module Event
 
   # :nodoc:
   struct Event
-    @event : LibEvent2::Event
-    @freed : Bool
-
     def initialize(@event : LibEvent2::Event)
       @freed = false
     end
@@ -40,14 +37,14 @@ module Event
     end
 
     private def to_timeval(time : Int)
-      t = uninitialized LibC::TimeVal
+      t = uninitialized LibC::Timeval
       t.tv_sec = typeof(t.tv_sec).new(time)
       t.tv_usec = typeof(t.tv_usec).new(0)
       t
     end
 
     private def to_timeval(time : Float)
-      t = uninitialized LibC::TimeVal
+      t = uninitialized LibC::Timeval
 
       seconds = typeof(t.tv_sec).new(time)
       useconds = typeof(t.tv_usec).new((time - seconds) * 1e6)
@@ -60,8 +57,6 @@ module Event
 
   # :nodoc:
   struct Base
-    @base : LibEvent2::EventBase
-
     def initialize
       @base = LibEvent2.event_base_new
     end
@@ -95,9 +90,7 @@ module Event
   end
 
   struct DnsBase
-    @dns_base : LibEvent2::DnsBase
-
-    def initialize(@dns_base)
+    def initialize(@dns_base : LibEvent2::DnsBase)
     end
 
     def getaddrinfo(nodename, servname, hints, data, &callback : LibEvent2::DnsGetAddrinfoCallback)
@@ -106,9 +99,7 @@ module Event
     end
 
     struct GetAddrInfoRequest
-      @request : LibEvent2::DnsGetAddrinfoRequest
-
-      def initialize(@request)
+      def initialize(@request : LibEvent2::DnsGetAddrinfoRequest)
       end
 
       def cancel

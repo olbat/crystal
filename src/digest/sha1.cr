@@ -11,11 +11,11 @@ module Digest::SHA1
     context.result
   end
 
-  def self.hexdigest(string_or_slice : String | Slice(UInt8))
+  def self.hexdigest(string_or_slice : String | Slice(UInt8)) : String
     digest(string_or_slice).to_slice.hexstring
   end
 
-  def self.base64digest(string_or_slice : String | Slice(UInt8))
+  def self.base64digest(string_or_slice : String | Slice(UInt8)) : String
     Base64.strict_encode(digest(string_or_slice).to_slice)
   end
 
@@ -23,12 +23,6 @@ module Digest::SHA1
   struct Context
     # This is a direct translation of https://tools.ietf.org/html/rfc3174#section-7
     # but we use loop unrolling for faster execution (about 1.07x slower than OpenSSL::SHA1).
-
-    @intermediate_hash : UInt32[5]
-    @length_low : UInt32
-    @length_high : UInt32
-    @message_block_index : Int32
-    @message_block : UInt8[64]
 
     def initialize
       @intermediate_hash = uninitialized UInt32[5]

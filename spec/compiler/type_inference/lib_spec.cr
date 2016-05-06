@@ -38,7 +38,24 @@ describe "Type inference: lib" do
   end
 
   it "reports error when changing var type and something breaks" do
-    assert_error "class LibFoo; def initialize; @value = 1; end; def value; @value; end; def value=(@value); end; end; f = LibFoo.new; f.value + 1; f.value = 'a'",
+    assert_error %(
+      class LibFoo
+        def initialize
+          @value = 1
+        end
+
+        def value
+          @value
+        end
+
+        def value=(@value : Char)
+        end
+      end
+
+      f = LibFoo.new
+      f.value + 1
+      f.value = 'a'
+      ),
       "undefined method '+' for Char"
   end
 
@@ -49,8 +66,9 @@ describe "Type inference: lib" do
       end
 
       class Foo
-        def value=(@value)
+        def value=(@value : Int32 | Char)
         end
+
         def value
           @value
         end
@@ -91,6 +109,11 @@ describe "Type inference: lib" do
 
   it "reports error out can only be used with lib funs" do
     assert_error "foo(out x)",
+      "out can only be used with lib funs"
+  end
+
+  it "reports error out can only be used with lib funs in named argument" do
+    assert_error "foo(x: out x)",
       "out can only be used with lib funs"
   end
 
@@ -632,5 +655,126 @@ describe "Type inference: lib" do
       LibX.x(out z)
       ),
       "can't use out at varargs position: declare the variable with `z = uninitialized ...` and pass it with `pointerof(z)`"
+  end
+
+  it "errors if using out with void pointer (#2424)" do
+    assert_error %(
+      lib LibFoo
+        fun foo(x : Void*)
+      end
+
+      LibFoo.foo(out x)
+      ),
+      "can't use out with Void* (argument 'x' of LibFoo.foo is Void*)"
+  end
+
+  it "errors if using out with void pointer through type" do
+    assert_error %(
+      lib LibFoo
+        type Foo = Void
+        fun foo(x : Foo*)
+      end
+
+      LibFoo.foo(out x)
+      ),
+      "can't use out with Void* (argument 'x' of LibFoo.foo is Void*)"
+  end
+
+  it "errors if using out with non-pointer" do
+    assert_error %(
+      lib LibFoo
+        fun foo(x : Int32)
+      end
+
+      LibFoo.foo(out x)
+      ),
+      "argument 'x' of LibFoo.foo cannot be passed as 'out' because it is not a pointer"
+  end
+
+  it "errors if redefining fun with different signature (#2468)" do
+    assert_error %(
+      fun foo
+      end
+
+      fun foo(x : Int32)
+      end
+      ),
+      "fun redefinition with different signature"
+  end
+
+  it "errors if using named args with variadic function" do
+    assert_error %(
+      lib LibC
+        fun foo(x : Int32, y : UInt8, ...) : Int32
+      end
+
+      LibC.foo y: 1_u8, x: 1
+      ),
+      "can't use named args with variadic function"
+  end
+
+  it "errors if using unknown named arg" do
+    assert_error %(
+      lib LibC
+        fun foo(x : Int32, y : UInt8) : Int32
+      end
+
+      LibC.foo y: 1_u8, x: 1, z: 2
+      ),
+      "no argument named 'z'"
+  end
+
+  it "errors if argument already specified" do
+    assert_error %(
+      lib LibC
+        fun foo(x : Int32, y : UInt8) : Int32
+      end
+
+      LibC.foo 1, x: 2
+      ),
+      "argument 'x' already specified"
+  end
+
+  it "errors if missing arugment" do
+    assert_error %(
+      lib LibC
+        fun foo(x : Int32, y : UInt8) : Int32
+      end
+
+      LibC.foo x: 2
+      ),
+      "missing argument: y"
+  end
+
+  it "errors if missing arugments" do
+    assert_error %(
+      lib LibC
+        fun foo(x : Int32, y : UInt8, z: Int32) : Int32
+      end
+
+      LibC.foo y: 1_u8
+      ),
+      "missing arguments: x, z"
+  end
+
+  it "can use named args" do
+    assert_type(%(
+      lib LibC
+        fun foo(x : Int32, y : UInt8) : Int32
+      end
+
+      LibC.foo y: 1_u8, x: 1
+      )) { int32 }
+  end
+
+  it "can use out with named args" do
+    assert_type(%(
+      lib LibC
+        fun foo(x : Int32*)
+      end
+
+      LibC.foo(x: out x)
+      x
+      )) { int32 }
   end
 end

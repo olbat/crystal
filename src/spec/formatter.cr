@@ -30,16 +30,8 @@ module Spec
 
   # :nodoc:
   class VerboseFormatter < Formatter
-    @indent : Int32
-    @last_description : String
-    @items : Array(Item)
-
     class Item
-      @indent : Int32
-      @description : String
-      @printed : Bool
-
-      def initialize(@indent, @description)
+      def initialize(@indent : Int32, @description : String)
         @printed = false
       end
 
@@ -90,9 +82,7 @@ module Spec
     end
   end
 
-  @@formatters : Array(Spec::Formatter)
-  @@formatters = [] of Spec::Formatter
-  @@formatters << Spec::DotFormatter.new
+  @@formatters = [Spec::DotFormatter.new] of Spec::Formatter
 
   # :nodoc:
   def self.formatters

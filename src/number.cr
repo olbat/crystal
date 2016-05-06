@@ -2,7 +2,7 @@
 struct Number
   include Comparable(Number)
 
-  def self.zero
+  def self.zero : self
     new(0)
   end
 
@@ -11,7 +11,7 @@ struct Number
     self
   end
 
-  # Creates an Array of self with the given values, which will be casted
+  # Creates an `Array` of self with the given values, which will be casted
   # to this type with the `new` method (defined in each Number type).
   #
   # ```
@@ -21,13 +21,51 @@ struct Number
   # ints = Int64[1, 2, 3]
   # ints.class # => Array(Int64)
   # ```
-  def self.[](*nums)
+  def self.[](*nums) : Array(self)
     Array(self).build(nums.size) do |buffer|
       nums.each_with_index do |num, i|
         buffer[i] = new(num)
       end
       nums.size
     end
+  end
+
+  # Creates a `Slice` of self with the given values, which will be casted
+  # to this type with the `new` method (defined in each Number type).
+  #
+  # The slice is allocated on the heap.
+  #
+  # ```
+  # floats = Float64.slice(1, 2, 3, 4)
+  # floats.class # => Slice(Float64)
+  #
+  # ints = Int64.slice(1, 2, 3)
+  # ints.class # => Slice(Int64)
+  # ```
+  macro slice(*nums)
+    %slice = Slice({{@type}}).new({{nums.size}})
+    {% for num, i in nums %}
+      %slice.to_unsafe[{{i}}] = {{@type}}.new({{num}})
+    {% end %}
+    %slice
+  end
+
+  # Creates a `StaticArray` of self with the given values, which will be casted
+  # to this type with the `new` method (defined in each Number type).
+  #
+  # ```
+  # floats = Float64.static_array(1, 2, 3, 4)
+  # floats.class # => StaticArray(Float64, 4)
+  #
+  # ints = Int64.static_array(1, 2, 3)
+  # ints.class # => StaticArray(Int64, 3)
+  # ```
+  macro static_array(*nums)
+    %array = uninitialized StaticArray({{@type}}, {{nums.size}})
+    {% for num, i in nums %}
+      %array.to_unsafe[{{i}}] = {{@type}}.new({{num}})
+    {% end %}
+    %array
   end
 
   # Invokes the given block with the sequence of numbers starting at `self`,

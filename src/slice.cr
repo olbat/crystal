@@ -1,3 +1,5 @@
+require "c/string"
+
 # A Slice is a `Pointer` with an associated size.
 #
 # While a pointer is unsafe because no bound checks are performed when reading from and writing to it,
@@ -7,14 +9,33 @@ struct Slice(T)
   include Enumerable(T)
   include Iterable
 
+  # Create a new `Slice` with the given *args*. The type of the
+  # slice will be the union of the type of the given *args*.
+  #
+  # The slice is allocated on the heap.
+  #
+  # ```
+  # slice = Slice[1, 'a']
+  # slice[0]    # => 1
+  # slice[1]    # => 'a'
+  # slice.class # => Slice(Char | Int32)
+  # ```
+  #
+  # See also: `Number.slice`.
+  macro [](*args)
+    slice = Slice(typeof({{*args}})).new({{args.size}})
+    {% for arg, i in args %}
+      slice.to_unsafe[{{i}}] = {{arg}}
+    {% end %}
+    slice
+  end
+
   # Returns the size of this slice.
   #
   # ```
   # Slice(UInt8).new(3).size # => 3
   # ```
   getter size : Int32
-
-  @pointer : T*
 
   # Creates a slice to the given *pointer*, bounded by the given *size*. This
   # method does not allocate heap memory.
@@ -222,6 +243,13 @@ struct Slice(T)
     to_s(io)
   end
 
+  # Returns a hexstring representation of this slice, assuming it's
+  # a `Slice(UInt8)`.
+  #
+  # ```
+  # slice = UInt8.slice(97, 62, 63, 8, 255)
+  # slice.hexstring # => "61626308ff"
+  # ```
   def hexstring
     self as Slice(UInt8)
 
@@ -232,6 +260,7 @@ struct Slice(T)
     end
   end
 
+  # :nodoc:
   def hexstring(buffer)
     self as Slice(UInt8)
 
@@ -243,6 +272,58 @@ struct Slice(T)
     end
 
     nil
+  end
+
+  # Returns a hexdump of this slice, assuming it's a `Slice(UInt8)`.
+  # This method is specially useful for debugging binary data and
+  # incoming/outgoing data in protocols.
+  #
+  # ```
+  # slice = UInt8.slice(97, 62, 63, 8, 255)
+  # slice.hexdump # => "6162 6308 ff                             abc.."
+  # ```
+  def hexdump
+    self as Slice(UInt8)
+
+    full_lines, leftover = size.divmod(16)
+    if leftover == 0
+      str_size = full_lines*58 - 1
+    else
+      str_size = (full_lines + 1)*58 - (16 - leftover) - 1
+    end
+
+    String.new(str_size) do |buffer|
+      hex_offset = 0
+      ascii_offset = 41
+
+      each_with_index do |v, i|
+        buffer[hex_offset] = to_hex(v >> 4)
+        buffer[hex_offset + 1] = to_hex(v & 0x0f)
+        hex_offset += 2
+
+        buffer[ascii_offset] = (v > 31 && v < 127) ? v : '.'.ord.to_u8
+        ascii_offset += 1
+
+        if i % 2 == 1
+          buffer[hex_offset] = ' '.ord.to_u8
+          hex_offset += 1
+        end
+
+        if i % 16 == 15
+          buffer[hex_offset] = ' '.ord.to_u8
+          buffer[ascii_offset] = '\n'.ord.to_u8
+          ascii_offset += 42
+          hex_offset += 18
+        end
+      end
+
+      while hex_offset % 58 < 41
+        buffer[hex_offset] = ' '.ord.to_u8
+        hex_offset += 1
+      end
+
+      {str_size, str_size}
+    end
   end
 
   def rindex(value)
@@ -276,7 +357,7 @@ struct Slice(T)
   end
 
   def to_s(io)
-    io << "["
+    io << "Slice["
     join ", ", io, &.inspect(io)
     io << "]"
   end

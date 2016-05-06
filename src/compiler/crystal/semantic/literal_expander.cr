@@ -176,6 +176,18 @@ module Crystal
 
         global_name = "$Regex:#{index}"
         temp_name = @program.new_temp_var_name
+
+        global_var = MetaTypeVar.new(global_name)
+        global_var.owner = @program
+        type = @program.nilable(@program.regex)
+        global_var.freeze_type = type
+        global_var.type = type
+
+        # TODO: need to bind with nil_var for codegen, but shouldn't be needed
+        global_var.bind_to(@program.nil_var)
+
+        @program.global_vars[global_name] = global_var
+
         @program.initialized_global_vars.add global_name
         first_assign = Assign.new(Var.new(temp_name), Global.new(global_name))
         regex = regex_new_call(node, StringLiteral.new(string))
@@ -210,6 +222,10 @@ module Crystal
                    If.new(left, node.right, left.clone)
                  elsif left.is_a?(Assign) && left.target.is_a?(Var)
                    If.new(left, node.right, left.target.clone)
+                 elsif left.is_a?(Not) && left.exp.is_a?(Var)
+                   If.new(left, node.right, left.clone)
+                 elsif left.is_a?(Not) && ((left_exp = left.exp).is_a?(IsA) && left_exp.obj.is_a?(Var))
+                   If.new(left, node.right, left.clone)
                  else
                    temp_var = new_temp_var
                    If.new(Assign.new(temp_var.clone, left), node.right, temp_var.clone)
@@ -243,6 +259,10 @@ module Crystal
                    If.new(left, left.clone, node.right)
                  elsif left.is_a?(Assign) && left.target.is_a?(Var)
                    If.new(left, left.target.clone, node.right)
+                 elsif left.is_a?(Not) && left.exp.is_a?(Var)
+                   If.new(left, left.clone, node.right)
+                 elsif left.is_a?(Not) && ((left_exp = left.exp).is_a?(IsA) && left_exp.obj.is_a?(Var))
+                   If.new(left, left.clone, node.right)
                  else
                    temp_var = new_temp_var
                    If.new(Assign.new(temp_var.clone, left), temp_var.clone, node.right)
@@ -449,6 +469,86 @@ module Crystal
                   end
       final_exp.location = node.location
       final_exp
+    end
+
+    # Transform a multi assign into many assigns.
+    def expand(node : MultiAssign)
+      # From:
+      #
+      #     a, b = [1, 2]
+      #
+      #
+      # To:
+      #
+      #     temp = [1, 2]
+      #     a = temp[0]
+      #     b = temp[1]
+      if node.values.size == 1
+        value = node.values[0]
+
+        temp_var = new_temp_var
+
+        assigns = Array(ASTNode).new(node.targets.size + 1)
+        assigns << Assign.new(temp_var.clone, value).at(value)
+        node.targets.each_with_index do |target, i|
+          call = Call.new(temp_var.clone, "[]", NumberLiteral.new(i)).at(value)
+          assigns << transform_multi_assign_target(target, call)
+        end
+        exps = Expressions.new(assigns)
+
+        # From:
+        #
+        #     a = 1, 2, 3
+        #
+        # To:
+        #
+        #     a = [1, 2, 3]
+      elsif node.targets.size == 1
+        target = node.targets.first
+        array = ArrayLiteral.new(node.values)
+        exps = transform_multi_assign_target(target, array)
+
+        # From:
+        #
+        #     a, b = c, d
+        #
+        # To:
+        #
+        #     temp1 = c
+        #     temp2 = d
+        #     a = temp1
+        #     b = temp2
+      else
+        temp_vars = node.values.map { new_temp_var }
+
+        assign_to_temps = [] of ASTNode
+        assign_from_temps = [] of ASTNode
+
+        temp_vars.each_with_index do |temp_var_2, i|
+          target = node.targets[i]
+          value = node.values[i]
+          if target.is_a?(Path)
+            assign_from_temps << Assign.new(target, value).at(node)
+          else
+            assign_to_temps << Assign.new(temp_var_2.clone, value).at(node)
+            assign_from_temps << transform_multi_assign_target(target, temp_var_2.clone)
+          end
+        end
+
+        exps = Expressions.new(assign_to_temps + assign_from_temps)
+      end
+      exps.location = node.location
+      exps
+    end
+
+    def transform_multi_assign_target(target, value)
+      if target.is_a?(Call)
+        target.name = "#{target.name}="
+        target.args << value
+        target
+      else
+        Assign.new(target, value).at(target)
+      end
     end
 
     private def case_when_comparison(temp_var, cond)

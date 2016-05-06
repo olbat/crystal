@@ -69,10 +69,15 @@ describe "Codegen: thread local" do
 
       class Foo
         @[ThreadLocal]
-        @@x = new
+        @@x : Foo?
+        @@x = nil
+
+        def self.x
+          @@x ||= new
+        end
 
         def initialize
-          @@x
+          Foo.x
         end
       end
 

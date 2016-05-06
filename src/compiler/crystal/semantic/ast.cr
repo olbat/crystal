@@ -1,5 +1,4 @@
 require "../syntax/ast"
-require "simple_hash"
 
 # TODO: 10 is a pretty big number for the number of nested generic instantiations,
 # (think Array(Array(Array(Array(Array(Array(Array(Array(Array(Array(Array(...))))))))))
@@ -23,7 +22,6 @@ module Crystal
     property observers : Dependencies?
     property input_observer : Call?
 
-    @dirty : Bool
     @dirty = false
 
     @type : Type?
@@ -39,18 +37,7 @@ module Crystal
     def set_type(type : Type)
       type = type.remove_alias_if_simple
       if !type.no_return? && (freeze_type = @freeze_type) && !type.implements?(freeze_type)
-        if !freeze_type.includes_type?(type.program.nil) && type.includes_type?(type.program.nil)
-          # This means that an instance variable become nil
-          if self.is_a?(MetaInstanceVar) && (nil_reason = self.nil_reason)
-            inner = MethodTraceException.new(nil, [] of ASTNode, nil_reason)
-          end
-        end
-
-        if self.is_a?(MetaInstanceVar)
-          raise "instance variable '#{self.name}' of #{self.owner} must be #{freeze_type}, not #{type}", inner, Crystal::FrozenTypeException
-        else
-          raise "type must be #{freeze_type}, not #{type}", inner, Crystal::FrozenTypeException
-        end
+        raise_frozen_type freeze_type, type, self
       end
       @type = type
     end
@@ -73,6 +60,25 @@ module Crystal
         from.raise ex.message, ex.inner
       else
         ::raise ex
+      end
+    end
+
+    def raise_frozen_type(freeze_type, invalid_type, from)
+      if !freeze_type.includes_type?(invalid_type.program.nil) && invalid_type.includes_type?(invalid_type.program.nil)
+        # This means that an instance variable become nil
+        if self.is_a?(MetaTypeVar) && (nil_reason = self.nil_reason)
+          inner = MethodTraceException.new(nil, [] of ASTNode, nil_reason)
+        end
+      end
+
+      if self.is_a?(MetaTypeVar)
+        if self.global?
+          from.raise "global variable '#{self.name}' must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+        else
+          from.raise "#{self.kind} variable '#{self.name}' of #{self.owner} must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
+        end
+      else
+        from.raise "type must be #{freeze_type}, not #{invalid_type}", inner, Crystal::FrozenTypeException
       end
     end
 
@@ -107,6 +113,13 @@ module Crystal
     end
 
     def bind(from = nil)
+      # Quick check to provide a better error message when assigning a type
+      # to a variable whose type is frozen
+      if self.is_a?(MetaTypeVar) && (freeze_type = self.freeze_type) && from &&
+         (from_type = from.type?) && !from_type.implements?(freeze_type)
+        raise_frozen_type freeze_type, from_type, from
+      end
+
       dependencies = @dependencies ||= Dependencies.new
 
       node = yield dependencies
@@ -208,13 +221,6 @@ module Crystal
       ::raise exception_type.for_node(self, message, inner)
     end
 
-    def visibility=(visibility : Visibility)
-    end
-
-    def visibility
-      Visibility::Public
-    end
-
     def find_owner_trace(owner)
       owner_trace = [] of ASTNode
       node = self
@@ -225,7 +231,7 @@ module Crystal
         dependencies = deps.select { |dep| dep.type? && dep.type.includes_type?(owner) && !visited.includes?(dep.object_id) }
         if dependencies.size > 0
           node = dependencies.first
-          nil_reason = node.nil_reason if node.is_a?(MetaInstanceVar)
+          nil_reason = node.nil_reason if node.is_a?(MetaTypeVar)
           owner_trace << node if node
           visited.add node.object_id
         else
@@ -234,6 +240,77 @@ module Crystal
       end
 
       MethodTraceException.new(owner, owner_trace, nil_reason)
+    end
+  end
+
+  class Var
+    def initialize(@name : String, @type : Type)
+    end
+
+    def_equals name, type?
+  end
+
+  # Fictitious node to represent primitives
+  class Primitive < ASTNode
+    getter name : String
+
+    def self.new(name : Symbol, type : Type? = nil)
+      new(name.to_s, type)
+    end
+
+    def initialize(@name : String, @type : Type? = nil)
+    end
+
+    def clone_without_location
+      Primitive.new(@name, @type)
+    end
+
+    def_equals_and_hash name
+  end
+
+  # Fictitious node to represent a tuple indexer
+  class TupleIndexer < Primitive
+    getter index : Int32
+
+    def initialize(@index : Int32)
+      super("tuple_indexer_known_index")
+    end
+
+    def clone_without_location
+      TupleIndexer.new(index)
+    end
+
+    def_equals_and_hash index
+  end
+
+  # Fictitious node to represent a type
+  class TypeNode < ASTNode
+    def initialize(@type : Type)
+    end
+
+    def to_macro_id
+      @type.to_s
+    end
+
+    def clone_without_location
+      self
+    end
+
+    def_equals_and_hash type
+  end
+
+  class Arg
+    def initialize(@name, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, @type : Type? = nil)
+    end
+
+    def clone_without_location
+      arg = previous_def
+
+      # An arg's type can sometimes be used as a restriction,
+      # and must be preserved when cloned
+      arg.set_type @type
+
+      arg
     end
   end
 
@@ -254,8 +331,6 @@ module Crystal
 
     property previous : DefWithMetadata?
     property next : Def?
-    property visibility : Visibility
-    @visibility = Visibility::Public
 
     getter special_vars : Set(String)?
 
@@ -274,6 +349,10 @@ module Crystal
       @macro_owner || @owner
     end
 
+    def macro_owner?
+      @macro_owner
+    end
+
     def add_special_var(name)
       special_vars = @special_vars ||= Set(String).new
       special_vars << name
@@ -288,6 +367,114 @@ module Crystal
           end
         end
       end
+    end
+
+    def clone_without_location
+      a_def = previous_def
+      a_def.raises = raises
+      a_def.previous = previous
+      a_def
+    end
+
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to arguments matching the given objects, taking into account this
+    # def's splat index.
+    def match(objects, &block)
+      Splat.match(self, objects) do |arg, arg_index, object, object_index|
+        yield arg, arg_index, object, object_index
+      end
+    end
+  end
+
+  class Macro
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to arguments matching the given objects, taking into account this
+    # macro's splat index.
+    def match(objects, &block)
+      Splat.match(self, objects) do |arg, arg_index, object, object_index|
+        yield arg, arg_index, object, object_index
+      end
+    end
+  end
+
+  class Splat
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to def arguments matching the given objects, taking into account the
+    # def's splat index.
+    def self.match(a_def, objects, &block)
+      Splat.before(a_def, objects) do |arg, arg_index, object, object_index|
+        yield arg, arg_index, object, object_index
+      end
+      Splat.at(a_def, objects) do |arg, arg_index, object, object_index|
+        yield arg, arg_index, object, object_index
+      end
+      Splat.after(a_def, objects) do |arg, arg_index, object, object_index|
+        yield arg, arg_index, object, object_index
+      end
+    end
+
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to arguments before a def's splat index, matching the given objects.
+    # If there are more objects than arguments in the method, they are not yielded.
+    # If splat index is `nil`, all args and objects (with their indices) are yielded.
+    def self.before(a_def, objects, &block)
+      splat = a_def.splat_index || a_def.args.size
+      splat.times do |i|
+        obj = objects[i]?
+        break unless obj
+
+        yield a_def.args[i], i, obj, i
+        i += 1
+      end
+      nil
+    end
+
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to arguments at a def's splat index, matching the given objects.
+    # If there are more objects than arguments in the method, they are not yielded.
+    # If splat index is `nil`, all args and objects (with their indices) are yielded.
+    def self.at(a_def, objects, &block)
+      splat = a_def.splat_index
+      return unless splat
+
+      splat_size = objects.size - (a_def.args.size - 1)
+      splat_size.times do |i|
+        obj_index = splat + i
+        obj = objects[obj_index]?
+        break unless obj
+
+        yield a_def.args[splat], splat, obj, obj_index
+      end
+
+      nil
+    end
+
+    # Yields `arg, arg_index, object, object_index` corresponding
+    # to arguments after a def's splat index, matching the given objects.
+    # If there are more objects than arguments in the method, they are not yielded.
+    # If splat index is `nil`, all args and objects (with their indices) are yielded.
+    def self.after(a_def, objects, &block)
+      splat = a_def.splat_index
+      return unless splat
+
+      splat_size = objects.size - (a_def.args.size - 1)
+      remaining_size = objects.size - (splat + splat_size)
+      remaining_size.times do |i|
+        arg_index = splat + 1 + i
+        obj_index = splat + splat_size + i
+        obj = objects[obj_index]?
+        break unless obj
+
+        yield a_def.args[arg_index], arg_index, obj, obj_index
+      end
+
+      nil
+    end
+
+    # Returns the splat size of this def matching the given objects.
+    # Returns `nil` if this def has no splat index.
+    def self.size(a_def, objects)
+      objects.size - (a_def.args.size - 1)
     end
   end
 
@@ -514,6 +701,8 @@ module Crystal
   end
 
   class MetaVar < ASTNode
+    include SpecialVar
+
     property name : String
 
     # True if we need to mark this variable as nilable
@@ -571,25 +760,46 @@ module Crystal
 
   alias MetaVars = Hash(String, MetaVar)
 
-  class MetaInstanceVar < Var
+  # A variable belonging to a type: a global,
+  # class or instance variable (globals belong to the program).
+  class MetaTypeVar < Var
     property nil_reason : NilReason?
+
+    # The owner of this variable, useful for showing good
+    # error messages.
     property! owner : Type
+
+    # Is this variable thread local? Only applicable
+    # to global and class variables.
+    property? thread_local : Bool
+    @thread_local = false
+
+    def kind
+      case name[0]
+      when '@'
+        if name[1] == '@'
+          :class
+        else
+          :instance
+        end
+      else
+        :global
+      end
+    end
+
+    def global?
+      kind == :global
+    end
   end
 
   class ClassVar
-    property! owner : Type
-    property! var : ClassVar
-    property class_scope : Bool
-    @class_scope = false
-    property? thread_local : Bool
-    @thread_local = false
+    # The "real" variable associated with this node,
+    # belonging to a type.
+    property! var : MetaTypeVar
   end
 
   class Global
-    property! owner : Type
-    property! var : Global
-    property? thread_local : Bool
-    @thread_local = false
+    property! var : MetaTypeVar
   end
 
   class Path
@@ -599,13 +809,16 @@ module Crystal
 
   class Call
     property before_vars : MetaVars?
-    property visibility : Visibility
-    @visibility = Visibility::Public
-  end
 
-  class Macro
-    property visibility : Visibility
-    @visibility = Visibility::Public
+    def clone_without_location
+      cloned = previous_def
+
+      # This is needed because this call might have resolved
+      # to a macro and has an expansion.
+      cloned.expanded = expanded.clone
+
+      cloned
+    end
   end
 
   class Block
@@ -667,7 +880,7 @@ module Crystal
   {% for name in %w(And Or
                    ArrayLiteral HashLiteral RegexLiteral RangeLiteral
                    Case StringInterpolation
-                   MacroExpression MacroIf MacroFor) %}
+                   MacroExpression MacroIf MacroFor MultiAssign) %}
     class {{name.id}}
       include ExpandableNode
     end
@@ -747,14 +960,6 @@ module Crystal
     def initialize(@name, @reason, @nodes = nil, @scope = nil)
     end
   end
-
-  {% for name in %w(Arg Var MetaVar) %}
-    class {{name.id}}
-      def special_var?
-        @name.starts_with? '$'
-      end
-    end
-  {% end %}
 
   class Asm
     property ptrof : PointerOf?

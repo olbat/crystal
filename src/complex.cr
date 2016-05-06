@@ -46,6 +46,17 @@ struct Complex
     io << "i"
   end
 
+  # Write this complex object to an io, surrounded by parentheses.
+  #
+  # ```
+  # Complex.new(42, 2).inspect # => (42 + 2i)
+  # ```
+  def inspect(io : IO)
+    io << '('
+    to_s(io)
+    io << ')'
+  end
+
   # Returns the absolute value of this complex number in a
   # number form, using the Pythagorean theorem.
   #
@@ -202,7 +213,7 @@ struct Complex
   end
 
   # Returns the number 0 in complex form
-  def self.zero
+  def self.zero : Complex
     new 0, 0
   end
 end

@@ -9,7 +9,6 @@ class String::Builder
   getter bytesize : Int32
   @capacity : Int32
   @buffer : Pointer(UInt8)
-  @finished : Bool
 
   def initialize(capacity : Int = 64)
     String.check_capacity_in_bounds(capacity)
@@ -20,7 +19,7 @@ class String::Builder
     @finished = false
   end
 
-  def self.build(capacity : Int = 64)
+  def self.build(capacity : Int = 64) : String
     builder = new(capacity)
     yield builder
     builder.to_s

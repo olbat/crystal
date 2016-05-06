@@ -1,10 +1,9 @@
 class OpenSSL::SSL::Context
-  @@default : OpenSSL::SSL::Context?
-
-  def self.default
+  def self.default : self
     @@default ||= new
   end
 
+  # Do not remove this until version > 0.15.0, it's needed in 0.15.0
   @handle : LibSSL::SSLContext
 
   def initialize

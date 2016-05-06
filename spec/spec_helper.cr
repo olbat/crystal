@@ -7,10 +7,6 @@ require "../src/compiler/crystal/**"
 include Crystal
 
 class Crystal::Program
-  def union_of(type1, type2)
-    union_of([type1, type2] of Type).not_nil!
-  end
-
   def union_of(type1, type2, type3)
     union_of([type1, type2, type3] of Type).not_nil!
   end
@@ -21,10 +17,6 @@ class Crystal::Program
 
   def fun_of(type1 : Type, type2 : Type)
     fun_of([type1, type2] of Type)
-  end
-
-  def nilable(type)
-    union_of self.nil, type
   end
 end
 
@@ -86,6 +78,11 @@ def assert_expand_second(from : String, to)
   assert_expand node, to
 end
 
+def assert_expand_third(from : String, to)
+  node = (Parser.parse(from) as Expressions)[2]
+  assert_expand node, to
+end
+
 def assert_after_cleanup(before, after)
   node = Parser.parse(before)
   result = infer_type node
@@ -127,7 +124,7 @@ def assert_macro_internal(program, sub_node, macro_args, macro_body, expected)
   a_macro = Parser.parse(macro_def) as Macro
 
   call = Call.new(nil, "", sub_node)
-  result = program.expand_macro a_macro, call, program
+  result = program.expand_macro a_macro, call, program, program
   result = result.source
   result = result[0..-2] if result.ends_with?(';')
   result.should eq(expected)

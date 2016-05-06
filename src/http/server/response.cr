@@ -32,24 +32,20 @@ class HTTP::Server
     # body. If not set, the default value is 200 (OK).
     property status_code : Int32
 
-    @io : IO
-    @wrote_headers : Bool
-    @upgraded : Bool
-    @original_output : Output
-
     # :nodoc:
-    def initialize(@io, @version = "HTTP/1.1")
+    def initialize(@io : IO, @version = "HTTP/1.1")
       @headers = Headers.new
       @status_code = 200
       @wrote_headers = false
       @upgraded = false
-      @output = @original_output = output = Output.new(@io)
+      @output = output = @original_output = Output.new(@io)
       output.response = self
     end
 
     # :nodoc:
     def reset
       @headers.clear
+      @cookies = nil
       @status_code = 200
       @wrote_headers = false
       @upgraded = false
@@ -70,6 +66,11 @@ class HTTP::Server
     # See `IO#write(slice)`.
     def write(slice : Slice(UInt8))
       @output.write(slice)
+    end
+
+    # Convenience method to set cookies, see `HTTP::Cookies`.
+    def cookies
+      @cookies ||= HTTP::Cookies.new
     end
 
     # :nodoc:
@@ -119,6 +120,10 @@ class HTTP::Server
       @wrote_headers
     end
 
+    protected def has_cookies?
+      !@cookies.nil?
+    end
+
     # :nodoc:
     class Output
       include IO::Buffered
@@ -150,8 +155,9 @@ class HTTP::Server
             response.headers["Transfer-Encoding"] = "chunked"
             @chunked = true
           end
-          response.write_headers
         end
+
+        ensure_headers_written
 
         if @chunked
           slice.size.to_s(16, @io)
@@ -166,9 +172,21 @@ class HTTP::Server
       def close
         unless response.wrote_headers?
           response.content_length = @out_count
+        end
+
+        ensure_headers_written
+
+        super
+      end
+
+      private def ensure_headers_written
+        unless response.wrote_headers?
+          if response.has_cookies?
+            response.cookies.add_response_headers(response.headers)
+          end
+
           response.write_headers
         end
-        super
       end
 
       private def unbuffered_close

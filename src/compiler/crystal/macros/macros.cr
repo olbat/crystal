@@ -1,20 +1,20 @@
 module Crystal
   class Program
     def push_def_macro(a_def)
-      @def_macros << a_def
+      def_macros << a_def
     end
 
-    def expand_macro(a_macro : Macro, call : Call, scope : Type)
-      macro_expander.expand a_macro, call, scope
+    def expand_macro(a_macro : Macro, call : Call, scope : Type, type_lookup : Type?)
+      macro_expander.expand a_macro, call, scope, type_lookup || scope
     end
 
-    def expand_macro(node : ASTNode, scope : Type, free_vars = nil)
-      macro_expander.expand node, scope, free_vars
+    def expand_macro(node : ASTNode, scope : Type, type_lookup : Type?, free_vars = nil)
+      macro_expander.expand node, scope, type_lookup || scope, free_vars
     end
 
     def expand_macro_defs
-      until @def_macros.empty?
-        def_macro = @def_macros.pop
+      until def_macros.empty?
+        def_macro = def_macros.pop
         expand_macro_def def_macro
       end
     end
@@ -32,7 +32,7 @@ module Crystal
       end
 
       begin
-        expanded_macro = @program.expand_macro target_def.body, owner
+        expanded_macro = @program.expand_macro target_def.body, owner, owner
       rescue ex : Crystal::Exception
         target_def.raise "expanding macro", ex
       end
@@ -72,7 +72,7 @@ module Crystal
     def parse_macro_source(expanded_macro, the_macro, node, vars, inside_def = false, inside_type = false, inside_exp = false)
       generated_source = expanded_macro.source
       begin
-        parser = Parser.new(generated_source, [vars.dup])
+        parser = Parser.new(generated_source, @program.string_pool, [vars.dup])
         parser.filename = VirtualFile.new(the_macro, generated_source, node.location)
         parser.visibility = node.visibility
         parser.def_nest = 1 if inside_def
@@ -99,22 +99,19 @@ module Crystal
     # `yields` hash.
     record ExpandedMacro, source : String, yields : Hash(String, ASTNode)?
 
-    @mod : Program
-    @cache : Hash(String, String)
-
-    def initialize(@mod)
+    def initialize(@mod : Program)
       @cache = {} of String => String
     end
 
-    def expand(a_macro : Macro, call : Call, scope : Type)
-      visitor = MacroVisitor.new self, @mod, scope, a_macro, call
+    def expand(a_macro : Macro, call : Call, scope : Type, type_lookup : Type)
+      visitor = MacroVisitor.new self, @mod, scope, type_lookup, a_macro, call
       a_macro.body.accept visitor
       source = visitor.to_s
       ExpandedMacro.new source, visitor.yields
     end
 
-    def expand(node : ASTNode, scope : Type, free_vars = nil)
-      visitor = MacroVisitor.new self, @mod, scope, node.location
+    def expand(node : ASTNode, scope : Type, type_lookup : Type, free_vars = nil)
+      visitor = MacroVisitor.new self, @mod, scope, type_lookup, node.location
       visitor.free_vars = free_vars
       node.accept visitor
       source = visitor.to_s
@@ -157,40 +154,21 @@ module Crystal
       getter yields : Hash(String, ASTNode)?
       property free_vars : Hash(String, Type)?
 
-      @expander : MacroExpander
-      @mod : Program
-      @scope : Type
-      @location : Location?
-      @vars : Hash(String, ASTNode)
-      @block : Block?
-      @str : MemoryIO
-      @macro_vars : Hash(MacroVarKey, String)?
-
-      def self.new(expander, mod, scope, a_macro : Macro, call)
+      def self.new(expander, mod, scope : Type, type_lookup : Type, a_macro : Macro, call)
         vars = {} of String => ASTNode
+        splat_index = a_macro.splat_index
 
-        marg_args_size = a_macro.args.size
-        call_args_size = call.args.size
-        splat_index = a_macro.splat_index || -1
-
-        # Args before the splat argument
-        0.upto(splat_index - 1) do |index|
-          macro_arg = a_macro.args[index]
-          call_arg = call.args[index]? || macro_arg.default_value.not_nil!
-          call_arg = call_arg.expand_node(call.location) if call_arg.is_a?(MagicConstant)
-          vars[macro_arg.name] = call_arg
+        # Process regular args
+        # (skip the splat index because we need to create an array for it)
+        a_macro.match(call.args) do |macro_arg, macro_arg_index, call_arg, call_arg_index|
+          vars[macro_arg.name] = call_arg if macro_arg_index != splat_index
         end
 
-        # The splat argument
-        if splat_index == -1
-          splat_size = 0
-          offset = 0
-        else
-          splat_size = call_args_size - (marg_args_size - 1)
-          splat_size = 0 if splat_size < 0
-          offset = splat_index + splat_size
+        # Gather splat args into an array
+        if splat_index
           splat_arg = a_macro.args[splat_index]
           splat_elements = if splat_index < call.args.size
+                             splat_size = Splat.size(a_macro, call.args)
                              call.args[splat_index, splat_size]
                            else
                              [] of ASTNode
@@ -198,13 +176,15 @@ module Crystal
           vars[splat_arg.name] = ArrayLiteral.new(splat_elements)
         end
 
-        # Args after the splat argument
-        base = splat_index + 1
-        base.upto(marg_args_size - 1) do |index|
-          macro_arg = a_macro.args[index]
-          call_arg = call.args[offset + index - base]? || macro_arg.default_value.not_nil!
-          call_arg = call_arg.expand_node(call.location) if call_arg.is_a?(MagicConstant)
-          vars[macro_arg.name] = call_arg
+        # Process default values
+        a_macro.args.each do |macro_arg|
+          default_value = macro_arg.default_value
+          next unless default_value
+
+          next if vars.has_key?(macro_arg.name)
+
+          default_value = default_value.expand_node(call.location) if default_value.is_a?(MagicConstant)
+          vars[macro_arg.name] = default_value
         end
 
         # The named arguments
@@ -219,12 +199,14 @@ module Crystal
           vars[macro_block_arg.name] = call_block || Nop.new
         end
 
-        new(expander, mod, scope, a_macro.location, vars, call.block)
+        new(expander, mod, scope, type_lookup, a_macro.location, vars, call.block)
       end
 
       record MacroVarKey, name : String, exps : Array(ASTNode)?
 
-      def initialize(@expander, @mod, @scope, @location, @vars = {} of String => ASTNode, @block = nil)
+      def initialize(@expander : MacroExpander, @mod : Program,
+                     @scope : Type, @type_lookup : Type, @location : Location?,
+                     @vars = {} of String => ASTNode, @block : Block? = nil)
         @str = MemoryIO.new(512)
         @last = Nop.new
       end
@@ -391,7 +373,7 @@ module Crystal
 
         key = MacroVarKey.new(node.name, exps)
 
-        macro_vars = @macro_vars ||= Hash(MacroVarKey, String).new
+        macro_vars = @macro_vars ||= {} of MacroVarKey => String
         macro_var = macro_vars[key] ||= @mod.new_temp_var_name
         @str << macro_var
         false
@@ -498,7 +480,7 @@ module Crystal
         if node.names.size == 1 && (match = @free_vars.try &.[node.names.first])
           matched_type = match
         else
-          matched_type = @scope.lookup_type(node)
+          matched_type = @type_lookup.lookup_type(node)
         end
 
         unless matched_type
@@ -767,7 +749,7 @@ module Crystal
   end
 
   class YieldsTransformer < Transformer
-    @yields : Hash(String, Crystal::ASTNode+)
+    @yields : Hash(String, Crystal::ASTNode)
 
     def initialize(@yields)
     end

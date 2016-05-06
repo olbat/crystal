@@ -160,12 +160,34 @@ struct Int
     self
   end
 
-  def **(other : Int)
-    (to_f ** other)
+  # Returns the value of raising *self* to the power of *exponent*.
+  #
+  # Raises `ArgumentError` if *exponent* is negative: if this is needed,
+  # either use a float base or a float exponent.
+  #
+  # ```
+  # 2 ** 3  # => 8
+  # 2 ** 0  # => 1
+  # 2 ** -1 # ArgumentError
+  # ```
+  def **(exponent : Int) : self
+    if exponent < 0
+      raise ArgumentError.new "cannot raise an integer to a negative integer power, use floats for that"
+    end
+
+    # TODO: this can probably be optimized by not using float pow
+    self.class.new(to_f ** exponent)
   end
 
-  def **(other)
-    to_f ** other
+  # Returns the value of raising *self* to the power of *exponent*.
+  #
+  # ```
+  # 2 ** 3.0  # => 8.0
+  # 2 ** 0.0  # => 1.0
+  # 2 ** -1.0 # => 0.5
+  # ```
+  def **(exponent : Float) : Float64
+    to_f ** exponent
   end
 
   def ===(char : Char)
@@ -458,6 +480,11 @@ struct Int8
   MIN = -128_i8
   MAX =  127_i8
 
+  # Returns an `Int8` by invoking `to_i8` on *value*.
+  def self.new(value)
+    value.to_i8
+  end
+
   def -
     0_i8 - self
   end
@@ -470,6 +497,11 @@ end
 struct Int16
   MIN = -32768_i16
   MAX =  32767_i16
+
+  # Returns an `Int16` by invoking `to_i16` on *value*.
+  def self.new(value)
+    value.to_i16
+  end
 
   def -
     0_i16 - self
@@ -484,6 +516,11 @@ struct Int32
   MIN = -2147483648_i32
   MAX =  2147483647_i32
 
+  # Returns an `Int32` by invoking `to_i32` on *value*.
+  def self.new(value)
+    value.to_i32
+  end
+
   def -
     0 - self
   end
@@ -496,6 +533,11 @@ end
 struct Int64
   MIN = -9223372036854775808_i64
   MAX =  9223372036854775807_i64
+
+  # Returns an `Int64` by invoking `to_i64` on *value*.
+  def self.new(value)
+    value.to_i64
+  end
 
   def -
     0_i64 - self
@@ -510,6 +552,11 @@ struct UInt8
   MIN =   0_u8
   MAX = 255_u8
 
+  # Returns an `UInt8` by invoking `to_u8` on *value*.
+  def self.new(value)
+    value.to_u8
+  end
+
   def abs
     self
   end
@@ -522,6 +569,11 @@ end
 struct UInt16
   MIN =     0_u16
   MAX = 65535_u16
+
+  # Returns an `UInt16` by invoking `to_u16` on *value*.
+  def self.new(value)
+    value.to_u16
+  end
 
   def abs
     self
@@ -536,6 +588,11 @@ struct UInt32
   MIN =          0_u32
   MAX = 4294967295_u32
 
+  # Returns an `UInt32` by invoking `to_u32` on *value*.
+  def self.new(value)
+    value.to_u32
+  end
+
   def abs
     self
   end
@@ -548,6 +605,11 @@ end
 struct UInt64
   MIN =                    0_u64
   MAX = 18446744073709551615_u64
+
+  # Returns an `UInt64` by invoking `to_u64` on *value*.
+  def self.new(value)
+    value.to_u64
+  end
 
   def abs
     self

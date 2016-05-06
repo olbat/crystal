@@ -86,7 +86,7 @@ describe "Type inference: generic class" do
       )) { int32 }
   end
 
-  it "inherits twice" do
+  pending "inherits twice" do
     assert_type(%(
       class Foo
         def initialize
@@ -109,7 +109,7 @@ describe "Type inference: generic class" do
       end
 
       class Baz < Bar(Int32)
-        def initialize(y, @z)
+        def initialize(y, @z : Char)
           super(y)
         end
 
@@ -507,7 +507,10 @@ describe "Type inference: generic class" do
       "generic type too nested"
   end
 
-  it "errors on generic type too nested (#2257)" do
+  # TODO: now that instance types are mandatory I don't think
+  # there's a way to trigger this, as we need to specify the type
+  # of @value and we can't
+  pending "errors on generic type too nested (#2257)" do
     assert_error %(
       class Foo(T)
       end
@@ -678,7 +681,59 @@ describe "Type inference: generic class" do
       infer_type(nodes)
     rescue ex : TypeException
       msg = ex.to_s.lines.map(&.strip)
-      msg.count("- Foo(T)::foo(x : Int32)").should eq(1)
+      msg.count("- Foo(T).foo(x : Int32)").should eq(1)
     end
+  end
+
+  # Given:
+  #
+  # ```
+  # class Parent; end
+  #
+  # class Child1 < Parent; end
+  #
+  # class Child2 < Parent; end
+  #
+  # $x : Array(Parent)
+  # $x = [] of Parent
+  # ```
+  #
+  # This must not be allowed:
+  #
+  # ```
+  # $x = [] of Child1
+  # ```
+  #
+  # Because if the type of $x is considered Array(Parent) by the compiler,
+  # this should be allowed:
+  #
+  # ```
+  # $x << Child2.new
+  # ```
+  #
+  # However, here we will be inserting a `Child2` inside a `Child1`,
+  # which is totally incorrect.
+  it "doesn't allow union of generic class with module to be assigned to a generic class with module (#2425)" do
+    assert_error %(
+      module Plugin
+      end
+
+      class PluginContainer(T)
+      end
+
+      class Foo
+        include Plugin
+      end
+
+      class Bar
+        @value : PluginContainer(Plugin)
+
+        def initialize(@value)
+        end
+      end
+
+      Bar.new(PluginContainer(Foo).new)
+      ),
+      "instance variable '@value' of Bar must be PluginContainer(Plugin), not PluginContainer(Foo)"
   end
 end

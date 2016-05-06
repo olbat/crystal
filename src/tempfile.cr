@@ -1,6 +1,4 @@
-lib LibC
-  fun mkstemp(result : Char*) : Int
-end
+require "c/stdlib"
 
 # The `Tempfile` class is for managing temporary files.
 # Every tempfile is operated as a `File`, including
@@ -74,7 +72,7 @@ class Tempfile < IO::FileDescriptor
   # ```
   # Tempfile.dirname # => "/tmp"
   # ```
-  def self.dirname
+  def self.dirname : String
     unless tmpdir = ENV["TMPDIR"]?
       tmpdir = "/tmp"
     end

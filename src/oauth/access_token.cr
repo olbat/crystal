@@ -1,7 +1,6 @@
 class OAuth::AccessToken
   getter token : String
   getter secret : String
-  @extra : Hash(String, String)?
 
   def initialize(@token : String, @secret : String, @extra : Hash(String, String)? = nil)
   end
@@ -10,7 +9,7 @@ class OAuth::AccessToken
     @extra ||= {} of String => String
   end
 
-  def self.from_response(response)
+  def self.from_response(response) : self
     token = nil
     secret = nil
     extra = {} of String => String

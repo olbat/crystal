@@ -63,6 +63,25 @@ module Crystal
     end
 
     def compile(sources : Array(Source), output_filename)
+      program = new_program
+      node, original_node = parse program, sources
+      node = program.infer_type node, @stats
+      codegen program, node, sources, output_filename unless @no_codegen
+      Result.new program, node, original_node
+    end
+
+    def type_top_level(source : Source)
+      type_top_level [source]
+    end
+
+    def type_top_level(sources : Array(Source))
+      program = new_program
+      node, original_node = parse program, sources
+      node = program.infer_type_top_level(node, @stats)
+      Result.new program, node, original_node
+    end
+
+    private def new_program
       program = Program.new
       program.target_machine = target_machine
       if cross_compile_flags = @cross_compile_flags
@@ -72,28 +91,21 @@ module Crystal
       program.flags.merge @flags
       program.wants_doc = wants_doc?
       program.color = color?
-
-      @link_flags = "#{@link_flags} -rdynamic"
-
-      node, original_node = parse program, sources
-      node = infer_type program, node
-      codegen program, node, sources, output_filename unless @no_codegen
-
-      Result.new program, node, original_node
+      program
     end
 
     def add_flag(flag)
       @flags << flag
     end
 
-    private def parse(program, sources)
+    private def parse(program, sources : Array)
       node = nil
       require_node = nil
 
       timing("Parse") do
         nodes = sources.map do |source|
           program.add_to_requires source.filename
-          parse(source) as ASTNode
+          parse(program, source) as ASTNode
         end
         node = Expressions.from(nodes)
 
@@ -112,8 +124,8 @@ module Crystal
       {node, original_node}
     end
 
-    private def parse(source)
-      parser = Parser.new(source.code)
+    private def parse(program, source : Source)
+      parser = Parser.new(source.code, program.string_pool)
       parser.filename = source.filename
       parser.wants_doc = wants_doc?
       parser.parse
@@ -122,10 +134,6 @@ module Crystal
       print colorize("file '#{Crystal.relative_filename(source.filename)}' is not a valid Crystal source file: ").bold
       puts "#{ex.message}"
       exit 1
-    end
-
-    private def infer_type(program, node)
-      program.infer_type node, @stats
     end
 
     private def check_bc_flags_changed(output_dir)
@@ -143,19 +151,23 @@ module Crystal
     end
 
     private def codegen(program : Program, node, sources, output_filename)
+      @link_flags = "#{@link_flags} -rdynamic"
+
       lib_flags = program.lib_flags
 
       llvm_modules = timing("Codegen (crystal)") do
         program.codegen node, debug: @debug, single_module: @single_module || @release || @cross_compile_flags || @emit, expose_crystal_main: false
       end
 
+      cache_dir = CacheDir.instance
+
       if @cross_compile_flags
         output_dir = "."
       else
-        output_dir = File.join(Config.cache_dir, sources.first.filename)
+        output_dir = cache_dir.directory_for(sources)
       end
 
-      Dir.mkdir_p(output_dir)
+      cache_dir.cleanup
 
       bc_flags_changed = check_bc_flags_changed output_dir
 
@@ -166,7 +178,7 @@ module Crystal
       if @cross_compile_flags
         cross_compile program, units, lib_flags, output_filename
       else
-        codegen units, lib_flags, output_filename, output_dir
+        codegen program, units, lib_flags, output_filename, output_dir
       end
     end
 
@@ -193,7 +205,7 @@ module Crystal
       puts "#{CC} #{o_name} -o #{output_filename} #{@link_flags} #{lib_flags}"
     end
 
-    private def codegen(units : Array(CompilationUnit), lib_flags, output_filename, output_dir)
+    private def codegen(program, units : Array(CompilationUnit), lib_flags, output_filename, output_dir)
       object_names = units.map &.object_filename
       multithreaded = LLVM.start_multithreaded
 
@@ -211,13 +223,13 @@ module Crystal
         if units.size == 1
           first_unit = units.first
 
-          codegen_single_unit(first_unit, target_triple, multithreaded)
+          codegen_single_unit(program, first_unit, target_triple, multithreaded)
 
           if emit = @emit
             first_unit.emit(emit, original_output_filename || output_filename)
           end
         else
-          codegen_many_units(units, target_triple, multithreaded)
+          codegen_many_units(program, units, target_triple, multithreaded)
         end
       end
 
@@ -235,29 +247,37 @@ module Crystal
       end
     end
 
-    private def codegen_many_units(units, target_triple, multithreaded)
+    private def codegen_many_units(program, units, target_triple, multithreaded)
       jobs_count = 0
+      wait_channel = Channel(Nil).new(@n_threads)
 
       while unit = units.pop?
-        fork { codegen_single_unit(unit, target_triple, multithreaded) }
-
+        fork_and_codegen_single_unit(program, unit, target_triple, multithreaded, wait_channel)
         jobs_count += 1
 
         if jobs_count >= @n_threads
-          LibC.waitpid(-1, out stat_loc, 0)
+          wait_channel.receive
           jobs_count -= 1
         end
       end
 
       while jobs_count > 0
-        LibC.waitpid(-1, out stat_loc_2, 0)
+        wait_channel.receive
         jobs_count -= 1
       end
     end
 
-    private def codegen_single_unit(unit, target_triple, multithreaded)
+    private def fork_and_codegen_single_unit(program, unit, target_triple, multithreaded, wait_channel)
+      spawn do
+        codegen_process = fork { codegen_single_unit(program, unit, target_triple, multithreaded) }
+        codegen_process.wait
+        wait_channel.send nil
+      end
+    end
+
+    private def codegen_single_unit(program, unit, target_triple, multithreaded)
       unit.llvm_mod.target = target_triple
-      ifdef x86_64
+      if program.has_flag?("x86_64")
         unit.llvm_mod.data_layout = DataLayout64
       else
         unit.llvm_mod.data_layout = DataLayout32
@@ -430,45 +450,6 @@ module Crystal
       def ll_name
         "#{@output_dir}/#{@name}.ll"
       end
-    end
-  end
-
-  def self.error(msg, color, exit_code = 1)
-    STDERR.print "Error: ".colorize.toggle(color).red.bold
-    STDERR.puts msg.colorize.toggle(color).bright
-    exit(exit_code) if exit_code
-  end
-
-  def self.relative_filename(filename : String)
-    dir = Dir.current
-    if filename.starts_with?(dir)
-      filename = filename[dir.size..-1]
-      if filename.starts_with? "/"
-        ".#{filename}"
-      else
-        "./#{filename}"
-      end
-    else
-      filename
-    end
-  end
-
-  def self.relative_filename(filename)
-    filename
-  end
-
-  def self.timing(label, stats)
-    if stats
-      print "%-34s" % "#{label}:"
-      time = Time.now
-      value = yield
-      elapsed_time = Time.now - time
-      LibGC.get_heap_usage_safe(out heap_size, out free_bytes, out unmapped_bytes, out bytes_since_gc, out total_bytes)
-      mb = heap_size / 1024.0 / 1024.0
-      puts " %s (%7.2fMB)" % {elapsed_time, mb}
-      value
-    else
-      yield
     end
   end
 end

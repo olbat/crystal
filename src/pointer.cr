@@ -1,3 +1,5 @@
+require "c/string"
+
 # A typed pointer to some memory.
 #
 # This is the only unsafe type in Crystal. If you are using a pointer, you are writing
@@ -30,9 +32,6 @@ struct Pointer(T)
   # it while advancing the location and keeping track of how many elements
   # were written. See `Pointer#appender`
   struct Appender(T)
-    @pointer : T*
-    @start : T*
-
     def initialize(@pointer : Pointer(T))
       @start = @pointer
     end

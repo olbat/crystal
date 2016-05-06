@@ -268,11 +268,6 @@ module Crystal
       node
     end
 
-    def transform(node : Virtual)
-      node.name = node.name.transform(self)
-      node
-    end
-
     def transform(node : Metaclass)
       node.name = node.name.transform(self)
       node
@@ -405,10 +400,6 @@ module Crystal
       node
     end
 
-    def transform(node : MetaVar)
-      node
-    end
-
     def transform(node : InstanceVar)
       node
     end
@@ -477,16 +468,8 @@ module Crystal
       node
     end
 
-    def transform(node : Primitive)
-      node
-    end
-
     def transform(node : Not)
       node.exp = node.exp.transform(self)
-      node
-    end
-
-    def transform(node : TypeFilteredNode)
       node
     end
 
@@ -528,10 +511,6 @@ module Crystal
       node
     end
 
-    def transform(node : TupleIndexer)
-      node
-    end
-
     def transform(node : Attribute)
       node
     end
@@ -557,10 +536,6 @@ module Crystal
     end
 
     def transform(node : MacroVar)
-      node
-    end
-
-    def transform(node : TypeNode)
       node
     end
 

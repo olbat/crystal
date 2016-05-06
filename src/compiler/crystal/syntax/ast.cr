@@ -55,6 +55,13 @@ module Crystal
       0
     end
 
+    def visibility=(visibility : Visibility)
+    end
+
+    def visibility
+      Visibility::Public
+    end
+
     def nop?
       false
     end
@@ -373,11 +380,19 @@ module Crystal
     def_equals_and_hash elements
   end
 
+  module SpecialVar
+    def special_var?
+      @name.starts_with? '$'
+    end
+  end
+
   # A local variable or block argument.
   class Var < ASTNode
+    include SpecialVar
+
     property name : String
 
-    def initialize(@name : String, @type = nil)
+    def initialize(@name : String)
     end
 
     def name_size
@@ -388,7 +403,7 @@ module Crystal
       Var.new(@name)
     end
 
-    def_equals name, type?
+    def_equals name
     def_hash name
   end
 
@@ -446,11 +461,15 @@ module Crystal
     property has_parenthesis : Bool
     property name_size : Int32
     property doc : String?
+    property? is_expansion : Bool
+    property visibility : Visibility
 
     def initialize(@obj, @name, @args = [] of ASTNode, @block = nil, @block_arg = nil, @named_args = nil, global = false, @name_column_number = 0, has_parenthesis = false)
       @name_size = -1
       @global = !!global
       @has_parenthesis = !!has_parenthesis
+      @is_expansion = false
+      @visibility = Visibility::Public
       if block = @block
         block.call = self
       end
@@ -789,12 +808,14 @@ module Crystal
 
   # A def argument.
   class Arg < ASTNode
+    include SpecialVar
+
     property name : String
     property default_value : ASTNode?
     property restriction : ASTNode?
     property doc : String?
 
-    def initialize(@name, @default_value = nil, @restriction = nil, @type = nil)
+    def initialize(@name, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil)
     end
 
     def accept_children(visitor)
@@ -807,13 +828,7 @@ module Crystal
     end
 
     def clone_without_location
-      arg = Arg.new @name, @default_value.clone, @restriction.clone
-
-      # An arg's type can sometimes be used as a restriction,
-      # and must be preserved when cloned
-      arg.set_type @type
-
-      arg
+      Arg.new @name, @default_value.clone, @restriction.clone
     end
 
     def_equals_and_hash name, default_value, restriction
@@ -861,9 +876,9 @@ module Crystal
     property? macro_def : Bool
     property return_type : ASTNode?
     property yields : Int32?
-    property instance_vars : Set(String)?
     property calls_super : Bool
     property calls_initialize : Bool
+    property calls_previous_def : Bool
     property uses_block_arg : Bool
     property assigns_special_var : Bool
     property name_column_number : Int32
@@ -871,15 +886,18 @@ module Crystal
     property attributes : Array(Attribute)?
     property splat_index : Int32?
     property doc : String?
+    property visibility : Visibility
 
     def initialize(@name, @args = [] of Arg, body = nil, @receiver = nil, @block_arg = nil, @return_type = nil, @macro_def = false, @yields = nil, @abstract = false, @splat_index = nil)
       @body = Expressions.from body
       @calls_super = false
       @calls_initialize = false
+      @calls_previous_def = false
       @uses_block_arg = false
       @assigns_special_var = false
       @raises = false
       @name_column_number = 0
+      @visibility = Visibility::Public
     end
 
     def accept_children(visitor)
@@ -911,14 +929,12 @@ module Crystal
 
     def clone_without_location
       a_def = Def.new(@name, @args.clone, @body.clone, @receiver.clone, @block_arg.clone, @return_type.clone, @macro_def, @yields, @abstract, @splat_index)
-      a_def.instance_vars = instance_vars
       a_def.calls_super = calls_super
       a_def.calls_initialize = calls_initialize
+      a_def.calls_previous_def = calls_previous_def
       a_def.uses_block_arg = uses_block_arg
       a_def.assigns_special_var = assigns_special_var
       a_def.name_column_number = name_column_number
-      a_def.previous = previous
-      a_def.raises = raises
       a_def
     end
 
@@ -933,9 +949,11 @@ module Crystal
     property name_column_number : Int32
     property splat_index : Int32?
     property doc : String?
+    property visibility : Visibility
 
     def initialize(@name, @args = [] of Arg, @body = Nop.new, @block_arg = nil, @splat_index = nil)
       @name_column_number = 0
+      @visibility = Visibility::Public
     end
 
     def accept_children(visitor)
@@ -948,27 +966,75 @@ module Crystal
       name.size
     end
 
-    def matches?(args_size, named_args)
+    def matches?(call_args, named_args)
+      call_args_size = call_args.size
       my_args_size = args.size
       min_args_size = args.index(&.default_value) || my_args_size
       max_args_size = my_args_size
+      splat_index = self.splat_index
       if splat_index
         min_args_size -= 1
         max_args_size = Int32::MAX
       end
 
-      unless min_args_size <= args_size <= max_args_size
+      # If there's a splat in the macros and named args in the call,
+      # there's no match (it's confusing to determine what should happen)
+      if named_args && splat_index
+        return nil
+      end
+
+      # If there are more positional arguments than those required, there's no match
+      # (if there's less they might be matched with named arguments)
+      if call_args_size > max_args_size
         return false
       end
 
+      # If there are named args we must check that all mandatory args
+      # are covered by positional arguments or named arguments.
+      if named_args
+        mandatory_args = BitArray.new(my_args_size)
+      elsif call_args_size < min_args_size
+        # Otherwise, they must be matched by positional arguments
+        return false
+      end
+
+      self.match(call_args) do |my_arg, my_arg_index, call_arg, call_arg_index|
+        mandatory_args[my_arg_index] = true if mandatory_args
+      end
+
+      # Check named args
       named_args.try &.each do |named_arg|
-        index = args.index { |arg| arg.name == named_arg.name }
-        if index
-          if index < args_size
-            return false
+        found_index = args.index { |arg| arg.name == named_arg.name }
+        if found_index
+          # A named arg can't target the splat index
+          if found_index == splat_index
+            return nil
+          end
+
+          # Check whether the named arg refers to an argument that was already specified
+          if mandatory_args
+            if mandatory_args[found_index]
+              return false
+            end
+
+            mandatory_args[found_index] = true
+          else
+            if found_index < call_args_size
+              return false
+            end
           end
         else
           return false
+        end
+      end
+
+      # Check that all mandatory args were specified
+      # (either with positional arguments or with named arguments)
+      if mandatory_args
+        self.args.each_with_index do |arg, index|
+          if index != splat_index && !arg.default_value && !mandatory_args[index]
+            return nil
+          end
         end
       end
 
@@ -1176,6 +1242,12 @@ module Crystal
       new names, true
     end
 
+    # Returns true if this path has a single component
+    # with the given name
+    def single?(name)
+      names.size == 1 && names.first == name
+    end
+
     def clone_without_location
       ident = Path.new(@names.clone, @global)
       ident.name_size = name_size
@@ -1324,13 +1396,15 @@ module Crystal
   class TypeDeclaration < ASTNode
     property var : ASTNode
     property declared_type : ASTNode
+    property value : ASTNode?
 
-    def initialize(@var, @declared_type)
+    def initialize(@var, @declared_type, @value = nil)
     end
 
     def accept_children(visitor)
       var.accept visitor
       declared_type.accept visitor
+      value.try &.accept visitor
     end
 
     def name_size
@@ -1350,10 +1424,10 @@ module Crystal
     end
 
     def clone_without_location
-      TypeDeclaration.new(@var.clone, @declared_type.clone)
+      TypeDeclaration.new(@var.clone, @declared_type.clone, @value.clone)
     end
 
-    def_equals_and_hash @var, @declared_type
+    def_equals_and_hash @var, @declared_type, @value
   end
 
   class UninitializedVar < ASTNode
@@ -1491,23 +1565,6 @@ module Crystal
     end
 
     def_equals_and_hash types
-  end
-
-  class Virtual < ASTNode
-    property name : ASTNode
-
-    def initialize(@name)
-    end
-
-    def accept_children(visitor)
-      @name.accept visitor
-    end
-
-    def clone_without_location
-      Virtual.new(@name.clone)
-    end
-
-    def_equals_and_hash name
   end
 
   class Self < ASTNode
@@ -1770,7 +1827,7 @@ module Crystal
       @varargs = false
     end
 
-    def mangled_name(obj_type)
+    def mangled_name(program, obj_type)
       real_name
     end
 
@@ -2125,35 +2182,6 @@ module Crystal
     def_equals_and_hash constraint, exp
   end
 
-  # Fictitious node to represent primitives
-  class Primitive < ASTNode
-    getter name : Symbol
-
-    def initialize(@name : Symbol, @type : Type? = nil)
-    end
-
-    def clone_without_location
-      Primitive.new(@name, @type)
-    end
-
-    def_equals_and_hash name
-  end
-
-  # Fictitious node to represent a tuple indexer
-  class TupleIndexer < Primitive
-    getter index : Int32
-
-    def initialize(@index : Int32)
-      super(:tuple_indexer_known_index)
-    end
-
-    def clone_without_location
-      TupleIndexer.new(index)
-    end
-
-    def_equals_and_hash index
-  end
-
   # Fictitious node to represent an id inside a macro
   class MacroId < ASTNode
     property value : String
@@ -2170,22 +2198,6 @@ module Crystal
     end
 
     def_equals_and_hash value
-  end
-
-  # Fictitious node to represent a type
-  class TypeNode < ASTNode
-    def initialize(@type : Type)
-    end
-
-    def to_macro_id
-      @type.to_s
-    end
-
-    def clone_without_location
-      self
-    end
-
-    def_equals_and_hash type
   end
 
   # Fictitious node that means "all these nodes come from this file"

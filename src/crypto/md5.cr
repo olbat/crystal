@@ -1,5 +1,5 @@
 class Crypto::MD5
-  def self.hex_digest(data : String)
+  def self.hex_digest(data : String) : String
     context = Context.new
     context.update(data.to_unsafe, data.bytesize.to_u32)
     context.final
@@ -8,11 +8,6 @@ class Crypto::MD5
 
   # :nodoc:
   struct Context
-    @i : UInt32[2]
-    @buf : UInt32[4]
-    @in : UInt8[64]
-    @digest : UInt8[16]
-
     def initialize
       @i = StaticArray(UInt32, 2).new(0_u32)
       @buf = StaticArray(UInt32, 4).new(0_u32)

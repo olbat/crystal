@@ -665,4 +665,122 @@ describe "Type inference: macro" do
       ),
       "macro 'foo' must be defined before this point but is defined later"
   end
+
+  it "looks up argument types in macro owner, not in subclass (#2395)" do
+    assert_type(%(
+      struct Nil
+        def method(x : Problem)
+          0
+        end
+      end
+
+      class Foo
+        macro def method(x : Problem) : Int32
+          {% for ivar in @type.instance_vars %}
+            @{{ivar.id}}.method(x)
+          {% end %}
+          42
+        end
+      end
+
+      class Problem
+      end
+
+      module Moo
+        class Problem
+        end
+
+        class Bar < Foo
+          @foo : Foo?
+        end
+      end
+
+      Moo::Bar.new.method(Problem.new)
+      )) { int32 }
+  end
+
+  it "doesn't error when adding macro call to constant (#2457)" do
+    assert_type(%(
+      macro foo
+      end
+
+      ITS = {} of String => String
+
+      macro coco
+        {% ITS["foo"] = yield %}
+        1
+      end
+
+      coco do
+        foo
+      end
+      )) { int32 }
+  end
+
+  it "errors if named arg matches splat argument" do
+    assert_error %(
+      macro foo(x, *y)
+      end
+
+      foo x: 1, y: 2
+      ),
+      "can't use named args with macros that have a splat argument"
+  end
+
+  it "doesn't allow named arg if there's a splat" do
+    assert_error %(
+      macro foo(*y, x)
+      end
+
+      foo 1, x: 2
+      ),
+      "can't use named args with macros that have a splat argument"
+  end
+
+  it "errors if missing one argument" do
+    assert_error %(
+      macro foo(x, y, z)
+      end
+
+      foo x: 1, y: 2
+      ),
+      "missing argument: z"
+  end
+
+  it "errors if missing two arguments" do
+    assert_error %(
+      macro foo(x, y, z)
+      end
+
+      foo y: 2
+      ),
+      "missing arguments: x, z"
+  end
+
+  it "doesn't include arguments with default values in missing arguments error" do
+    assert_error %(
+
+      macro foo(x, z, y = 1)
+      end
+
+      foo(x: 1)
+      ),
+      "missing argument: z"
+  end
+
+  it "finds generic type argument of included module" do
+    assert_type(%(
+      module Bar(T)
+        def t
+          {{ T }}
+        end
+      end
+
+      class Foo(U)
+        include Bar(U)
+      end
+
+      Foo(Int32).new.t
+      )) { int32.metaclass }
+  end
 end

@@ -1,4 +1,10 @@
+require "../syntax"
+
 module Crystal
+  def self.format(source, filename = nil)
+    Crystal::Formatter.format(source, filename: filename)
+  end
+
   class Formatter < Visitor
     def self.format(source, filename = nil)
       parser = Parser.new(source)
@@ -27,9 +33,8 @@ module Crystal
       property start_line : Int32
       property end_line : Int32
       property needs_newline : Bool
-      @kind : Symbol
 
-      def initialize(@start_line, @kind)
+      def initialize(@start_line : Int32, @kind : Symbol)
         @end_line = @start_line
         @needs_newline = true
       end
@@ -111,7 +116,7 @@ module Crystal
       @assign_infos = [] of AlignInfo
       @doc_comments = [] of CommentInfo
       @current_doc_comment = nil
-      @hash_in_same_line = Set(typeof(object_id)).new
+      @hash_in_same_line = Set(UInt64).new
       @shebang = @token.type == :COMMENT && @token.value.to_s.starts_with?("#!")
       @heredoc_fixes = [] of HeredocFix
       @last_is_heredoc = false
@@ -420,7 +425,7 @@ module Crystal
       write @token.raw
       format_regex_modifiers if is_regex
 
-      if is_heredoc && indent_difference != 0
+      if is_heredoc && indent_difference > 0
         @heredoc_fixes << HeredocFix.new(heredoc_line, @line, indent_difference)
       end
 
@@ -439,6 +444,7 @@ module Crystal
     def visit(node : StringInterpolation)
       check :DELIMITER_START
       is_regex = @token.delimiter_state.kind == :regex
+      indent_difference = @token.column_number - (@column + 1)
 
       write @token.raw
       next_string_token
@@ -447,7 +453,6 @@ module Crystal
       is_heredoc = @token.delimiter_state.kind == :heredoc
       @last_is_heredoc = is_heredoc
 
-      indent_difference = @token.column_number - (@column + 1)
       heredoc_line = @line
 
       node.expressions.each do |exp|
@@ -502,7 +507,7 @@ module Crystal
       check :DELIMITER_END
       write @token.raw
 
-      if is_heredoc && indent_difference != 0
+      if is_heredoc && indent_difference > 0
         @heredoc_fixes << HeredocFix.new(heredoc_line, @line, indent_difference)
       end
 
@@ -955,6 +960,13 @@ module Crystal
       paren_count = @paren_count
 
       node.types.each_with_index do |type, i|
+        if @token.type == :"?"
+          # This can happen if it's a nilable type written like T?
+          write "?"
+          next_token
+          break
+        end
+
         accept type
 
         last = last?(i, node.types)
@@ -963,12 +975,6 @@ module Crystal
         must_break = false
         while true
           case @token.type
-          when :"?"
-            # This can happen if it's a nilable type written like T?
-            write "?"
-            next_token
-            must_break = true
-            break
           when :"|"
             write " | "
             next_token
@@ -1366,7 +1372,6 @@ module Crystal
     def visit(node : Macro)
       write_keyword :macro, " "
 
-      check :IDENT
       write node.name
       next_token_skip_space
 
@@ -1865,13 +1870,15 @@ module Crystal
 
         # It's something like `foo.bar\n
         #                         .baz`
-        if @token.type == :NEWLINE
+        if (@token.type == :NEWLINE) || @wrote_newline
           newline_indent = @dot_column || @indent + 2
           indent(newline_indent) { consume_newlines }
           write_indent(newline_indent)
         end
 
         if @token.type != :"."
+          old_dot_column = @dot_column
+
           # It's an operator
           if @token.type == :"["
             write "["
@@ -1922,6 +1929,7 @@ module Crystal
               accept_assign_value_after_equals last_arg
             end
 
+            @dot_column = old_dot_column
             return false
           elsif @token.type == :"[]"
             write "[]"
@@ -1934,6 +1942,7 @@ module Crystal
               accept node.args.last
             end
 
+            @dot_column = old_dot_column
             return false
           else
             write " " if needs_space
@@ -1957,12 +1966,14 @@ module Crystal
             write " " if needs_space
             accept node.args.last
           end
+
+          @dot_column = old_dot_column
           return false
         end
 
         next_token
         skip_space
-        if @token.type == :NEWLINE
+        if (@token.type == :NEWLINE) || @wrote_newline
           newline_indent = @dot_column || @indent + 2
           indent(newline_indent) { consume_newlines }
           write_indent(newline_indent)
@@ -2079,6 +2090,7 @@ module Crystal
       if has_args || node.block_arg
         finish_args(has_parentheses, has_newlines, ends_with_newline, found_comment, column)
       elsif has_parentheses
+        skip_space_or_newline
         write_token :")"
       end
 
@@ -2368,8 +2380,13 @@ module Crystal
             accept body
           end
         when Cast
-          clear_object(body)
-          accept body
+          if body.obj.is_a?(Var)
+            call = Call.new(nil, "as", args: [body.to] of ASTNode)
+            accept call
+          else
+            clear_object(body)
+            accept body
+          end
         else
           raise "Bug: expected Call, IsA or RespondsTo as &. argument, at #{node.location}, not #{body.class}"
         end
@@ -2715,12 +2732,18 @@ module Crystal
 
     def visit(node : TypeDeclaration)
       accept node.var
-      skip_space_or_newline
+      skip_space
       check :":"
       next_token_skip_space_or_newline
       write " : "
       accept node.declared_type
-
+      if value = node.value
+        skip_space
+        check :"="
+        next_token_skip_space_or_newline
+        write " = "
+        accept value
+      end
       false
     end
 
@@ -2935,8 +2958,27 @@ module Crystal
 
     def visit(node : Cast)
       accept node.obj
-      write_keyword " ", :as, " "
-      accept node.to
+      skip_space
+      if @token.type == :"."
+        write "."
+        next_token_skip_space_or_newline
+        write_keyword :as
+        skip_space
+        if @token.type == :"("
+          write_token :"("
+          skip_space_or_newline
+          accept node.to
+          skip_space_or_newline
+          write_token :")"
+        else
+          skip_space
+          write " "
+          accept node.to
+        end
+      else
+        write_keyword " ", :as, " "
+        accept node.to
+      end
       false
     end
 
@@ -3245,17 +3287,6 @@ module Crystal
       false
     end
 
-    def visit(node : Virtual)
-      accept node.name
-      skip_space
-
-      check :"+"
-      write "+"
-      next_token
-
-      false
-    end
-
     def visit(node : Block)
       # Handled in format_block
       return false
@@ -3271,23 +3302,11 @@ module Crystal
       return false
     end
 
-    def visit(node : Primitive)
-      return false
-    end
-
     def visit(node : MacroId)
       return false
     end
 
-    def visit(node : TypeNode)
-      return false
-    end
-
     def visit(node : MetaVar)
-      return false
-    end
-
-    def visit(node : TypeFilteredNode)
       return false
     end
 
@@ -3438,6 +3457,10 @@ module Crystal
       write_token :")"
 
       false
+    end
+
+    def visit(node : ASTNode)
+      raise "Bug: unexpected node: #{node.class} at #{node.location}"
     end
 
     def to_s(io)

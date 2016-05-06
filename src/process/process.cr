@@ -1,43 +1,19 @@
-lib LibC
-  WNOHANG = 0x00000001
-
-  @[ReturnsTwice]
-  fun fork : PidT
-  fun getpgid(pid : PidT) : PidT
-  fun kill(pid : PidT, signal : Int) : Int
-  fun getpid : PidT
-  fun getppid : PidT
-  fun exit(status : Int) : NoReturn
-
-  ifdef x86_64
-    alias ClockT = UInt64
-  else
-    alias ClockT = UInt32
-  end
-
-  SC_CLK_TCK = 3
-
-  struct Tms
-    utime : ClockT
-    stime : ClockT
-    cutime : ClockT
-    cstime : ClockT
-  end
-
-  fun times(buffer : Tms*) : ClockT
-  fun sysconf(name : Int) : Long
-end
+require "c/signal"
+require "c/stdlib"
+require "c/sys/times"
+require "c/sys/wait"
+require "c/unistd"
 
 class Process
   def self.exit(status = 0)
     LibC.exit(status)
   end
 
-  def self.pid
+  def self.pid : LibC::PidT
     LibC.getpid
   end
 
-  def self.getpgid(pid : Int32)
+  def self.getpgid(pid : Int32) : LibC::PidT
     ret = LibC.getpgid(pid)
     raise Errno.new(ret) if ret < 0
     ret
@@ -51,7 +27,7 @@ class Process
     nil
   end
 
-  def self.ppid
+  def self.ppid : LibC::PidT
     LibC.getppid
   end
 
@@ -64,7 +40,7 @@ class Process
   end
 
   # Returns a `Process`.
-  def self.fork
+  def self.fork : self?
     if pid = fork_internal
       Process.new pid
     else
@@ -98,16 +74,16 @@ class Process
     case pid
     when 0
       pid = nil
-      @@after_fork_child_callbacks.each(&.call) if run_hooks
+      Process.after_fork_child_callbacks.each(&.call) if run_hooks
     when -1
       raise Errno.new("fork")
     end
     pid
   end
 
-  record Tms, utime, stime, cutime, cstime
+  record Tms, utime : Float64, stime : Float64, cutime : Float64, cstime : Float64
 
-  def self.times
+  def self.times : Tms
     hertz = LibC.sysconf(LibC::SC_CLK_TCK).to_f
     LibC.times(out tms)
     Tms.new(tms.utime / hertz, tms.stime / hertz, tms.cutime / hertz, tms.cstime / hertz)

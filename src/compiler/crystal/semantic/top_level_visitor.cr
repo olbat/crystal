@@ -38,14 +38,13 @@ module Crystal
   # subclasses or not and we can tag it as "virtual" (having subclasses), but that concept
   # might disappear in the future and we'll make consider everything as "maybe virtual".
   class TopLevelVisitor < BaseTypeVisitor
-    @process_types : Int32
     @inside_block : Int32
 
     def initialize(mod)
       super(mod)
 
-      @process_types = 0
       @inside_block = 0
+      @process_types = 0
     end
 
     def processing_types
@@ -72,6 +71,10 @@ module Crystal
     end
 
     def visit(node : Metaclass)
+      @process_types > 0 ? super : false
+    end
+
+    def visit(node : Self)
       @process_types > 0 ? super : false
     end
 
@@ -143,6 +146,10 @@ module Crystal
       if !type && superclass
         if node.struct? != superclass.struct?
           node.raise "can't make #{node.struct? ? "struct" : "class"} '#{node.name}' inherit #{superclass.type_desc} '#{superclass.to_s}'"
+        end
+
+        if superclass.struct? && !superclass.abstract?
+          node.raise "can't extend non-abstract struct #{superclass}"
         end
       end
 
@@ -363,13 +370,51 @@ module Crystal
         end
       end
 
+      primitive_attribute = node.attributes.try &.find { |attr| attr.name == "Primitive" }
+      if primitive_attribute
+        process_primitive_attribute(node, primitive_attribute)
+      end
+
       target_type.add_def node
       node.set_type @mod.nil
 
       if is_instance_method
+        # If it's an initialize method, we define a `self.new` for
+        # the type, initially empty. We will fill it once we know if
+        # a type defines a `finalize` method, but defining it now
+        # allows `previous_def` for a next `def self.new` definition
+        # to find this method.
+        if node.name == "initialize"
+          new_method = node.expand_new_signature_from_initialize(target_type)
+          target_type.metaclass.add_def(new_method)
+
+          # And we register it to later complete it
+          @mod.new_expansions << Program::NewExpansion.new(node, new_method)
+        end
+
         run_hooks target_type.metaclass, target_type, :method_added, node, Call.new(nil, "method_added", [node] of ASTNode).at(node.location)
       end
+
       false
+    end
+
+    private def process_primitive_attribute(node, attribute)
+      if attribute.args.size != 1
+        attribute.raise "expected Primitive attribute to have one argument"
+      end
+
+      arg = attribute.args.first
+      unless arg.is_a?(SymbolLiteral)
+        arg.raise "expected Primitive argument to be a symbol literal"
+      end
+
+      value = arg.value
+
+      unless node.body.is_a?(Nop)
+        node.raise "method marked as Primitive must have an empty body"
+      end
+
+      node.body = Primitive.new(value)
     end
 
     def visit(node : Include)
@@ -497,7 +542,7 @@ module Crystal
       end
 
       is_flags = node.has_attribute?("Flags")
-      all_value = 0_u64
+      all_value = interpret_enum_value(NumberLiteral.new(0), enum_base_type)
       existed = !!enum_type
       enum_type ||= EnumType.new(@mod, scope, name, enum_base_type, is_flags)
 
@@ -656,19 +701,7 @@ module Crystal
       false
     end
 
-    def visit(node : TypeOf)
-      false
-    end
-
     def visit(node : PointerOf)
-      false
-    end
-
-    def visit(node : ArrayLiteral)
-      false
-    end
-
-    def visit(node : HashLiteral)
       false
     end
 
@@ -910,7 +943,7 @@ module Crystal
         if @struct_or_union.has_var?(field.name)
           field.raise "#{@struct_or_union.type_desc} #{@struct_or_union} already defines a field named '#{field.name}'"
         end
-        ivar = MetaInstanceVar.new(field.name, field_type)
+        ivar = MetaTypeVar.new(field.name, field_type)
         ivar.owner = @struct_or_union
         @struct_or_union.add_var ivar
       end

@@ -1,3 +1,4 @@
+require "c/pthread"
 require "./*"
 
 # :nodoc:
@@ -9,21 +10,16 @@ class Thread(T, R)
     Thread(Nil, R).new(nil) { func.call }
   end
 
-  @func : T -> R
-  @arg : T
-  @detached : Bool
-  @th : LibPThread::Thread
-  @ret : R
+  @th : LibC::PthreadT?
   @exception : Exception?
 
-  def initialize(arg : T, &func : T -> R)
-    @func = func
-    @arg = arg
+  def initialize(@arg : T, &@func : T -> R)
     @detached = false
     @ret = uninitialized R
-    ret = LibPThread.create(out @th, nil, ->(data) {
+    ret = LibGC.pthread_create(out th, nil, ->(data) {
       (data as Thread(T, R)).start
     }, self as Void*)
+    @th = th
 
     if ret != 0
       raise Errno.new("pthread_create")
@@ -31,11 +27,11 @@ class Thread(T, R)
   end
 
   def finalize
-    LibPThread.detach(@th) unless @detached
+    LibGC.pthread_detach(@th.not_nil!) unless @detached
   end
 
   def join
-    if LibPThread.join(@th, out _ret) != 0
+    if LibGC.pthread_join(@th.not_nil!, out _ret) != 0
       raise Errno.new("pthread_join")
     end
     @detached = true

@@ -11,16 +11,11 @@ class Crystal::Call
   property target_defs : Array(Def)?
   property expanded : ASTNode?
 
-  property? is_expansion : Bool
-  @is_expansion = false
-
   property? uses_with_scope : Bool
   @uses_with_scope = false
 
   getter? raises : Bool
   @raises = false
-
-  @subclass_notifier : ModuleType?
 
   def mod
     scope.program
@@ -221,30 +216,11 @@ class Crystal::Call
     matches = check_tuple_indexer(owner, def_name, args, arg_types)
     matches ||= lookup_matches_checking_expansion(owner, signature, search_in_parents)
 
-    if matches.empty?
-      if def_name == "new" && owner.metaclass? && (owner.instance_type.class? || owner.instance_type.virtual?) && !owner.instance_type.pointer?
-        new_matches = define_new owner, arg_types
-        unless new_matches.empty?
-          if owner.virtual_metaclass?
-            matches = owner.lookup_matches(signature)
-          else
-            matches = new_matches
-          end
-        end
-      elsif name == "super" && def_name == "initialize" && args.empty?
-        # If the superclass has no `new` and no `initialize`, we can safely
-        # define an empty initialize
-        has_new = owner.metaclass.has_def_without_parents?("new")
-        has_initialize = owner.has_def_without_parents?("initialize")
-        unless has_new || has_initialize
-          initialize_def = Def.new("initialize")
-          owner.add_def initialize_def
-          matches = Matches.new([Match.new(initialize_def, arg_types, MatchContext.new(owner, owner))], true)
-        end
-      elsif !obj && owner != mod
-        mod_matches = lookup_matches_with_signature(mod, signature, search_in_parents)
-        matches = mod_matches unless mod_matches.empty?
-      end
+    # If we didn't find a match and this call doesn't have a receiver,
+    # and we are not at the top level, let's try searching the top-level
+    if matches.empty? && !obj && owner != mod
+      mod_matches = lookup_matches_with_signature(mod, signature, search_in_parents)
+      matches = mod_matches unless mod_matches.empty?
     end
 
     if matches.empty? && owner.class? && owner.abstract? && name != "super"
@@ -266,7 +242,7 @@ class Crystal::Call
         # don't give error. This is to allow small code comments without giving
         # compile errors, which will anyway appear once you add concrete
         # subclasses and instances.
-        unless owner.abstract? && (owner.leaf? || owner.is_a?(GenericClassInstanceType))
+        if def_name == "new" || !(owner.abstract? && (owner.leaf? || owner.is_a?(GenericClassInstanceType)))
           raise_matches_not_found(matches.owner || owner, def_name, matches)
         end
       end
@@ -608,7 +584,7 @@ class Crystal::Call
   end
 
   def lookup_macro
-    in_macro_target &.lookup_macro(name, args.size, named_args)
+    in_macro_target &.lookup_macro(name, args, named_args)
   end
 
   def in_macro_target
@@ -793,7 +769,7 @@ class Crystal::Call
         else
           block_type = block.type
           matched = MatchesLookup.match_arg(block_type, output, match.context)
-          if !matched && !void_return_type?(match.context, output)
+          if (!matched || (matched && !block_type.implements?(matched))) && !void_return_type?(match.context, output)
             if output.is_a?(ASTNode) && !output.is_a?(Underscore)
               begin
                 block_type = ident_lookup.lookup_node_type(output).virtual_type
@@ -956,7 +932,7 @@ class Crystal::Call
       args["self"] = MetaVar.new("self", self_type)
     end
 
-    strict_check = body.is_a?(Primitive) && body.name == :fun_call
+    strict_check = body.is_a?(Primitive) && body.name == "fun_call"
 
     arg_types.each_index do |index|
       arg = typed_def.args[index]
@@ -1014,7 +990,7 @@ class Crystal::Call
     {typed_def, args}
   end
 
-  def attach_subclass_observer(type)
+  def attach_subclass_observer(type : ModuleType)
     detach_subclass_observer
     type.add_subclass_observer(self)
     @subclass_notifier = type

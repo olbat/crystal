@@ -145,6 +145,25 @@ describe "Type inference: did you mean" do
       "did you mean @barbara"
   end
 
+  it "says did you mean for instance var in subclass" do
+    assert_error %(
+      class Foo
+        def initialize
+          @barbara = 1
+        end
+      end
+
+      class Bar < Foo
+        def foo
+          @bazbaza.abs
+        end
+      end
+
+      Bar.new.foo
+      ),
+      "did you mean @barbara"
+  end
+
   it "doesn't suggest when declaring var with suffix if and using it (#946)" do
     assert_error %(
       a if a = 1
@@ -206,5 +225,21 @@ describe "Type inference: did you mean" do
       Foo.new(1.0)
       ),
       "do you maybe have a typo in this 'intialize' method?"
+  end
+
+  it "suggests for global variable" do
+    assert_error %(
+      $foobar = 1
+      $fooobar
+      ), "did you mean $foobar"
+  end
+
+  it "suggests for class variable" do
+    assert_error %(
+      class Foo
+        @@foobar = 1
+        @@fooobar
+      end
+      ), "did you mean @@foobar"
   end
 end

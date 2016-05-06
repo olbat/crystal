@@ -91,7 +91,7 @@ describe "Codegen: is_a?" do
   it "evaluates method on filtered union type" do
     run("
       class Foo
-        def initialize(x)
+        def initialize(x : Int32)
           @x = x
         end
 
@@ -114,7 +114,7 @@ describe "Codegen: is_a?" do
   it "evaluates method on filtered union type 2" do
     run("
       class Foo
-        def initialize(x)
+        def initialize(x : Int32)
           @x = x
         end
 
@@ -124,7 +124,7 @@ describe "Codegen: is_a?" do
       end
 
       class Bar
-        def initialize(x)
+        def initialize(x : Int32)
           @x = x
         end
 
@@ -422,7 +422,7 @@ describe "Codegen: is_a?" do
   it "restricts type in else but lazily" do
     run("
       class Foo
-        def initialize(@x)
+        def initialize(@x : Int32)
         end
 
         def x
@@ -641,5 +641,34 @@ describe "Codegen: is_a?" do
         4
       end
       )).to_i.should eq(3)
+  end
+
+  it "does is_a? for union of module and type" do
+    run(%(
+      module Moo
+        def moo
+          2
+        end
+      end
+
+      class Foo
+        include Moo
+      end
+
+      class Bar
+        include Moo
+      end
+
+      def foo(io)
+        if io.is_a?(Moo)
+          io.moo
+        else
+          3
+        end
+      end
+
+      io = (Foo.new as Moo) || 1
+      foo(io)
+      )).to_i.should eq(2)
   end
 end

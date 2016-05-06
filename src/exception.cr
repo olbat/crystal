@@ -1,3 +1,5 @@
+require "c/stdio"
+require "c/string"
 require "unwind"
 require "dl"
 
@@ -18,19 +20,23 @@ struct CallStack
     @backtrace ||= decode_backtrace
   end
 
-  # This is only used for the workaround described in `Exception.callstack`
-  protected def self.makecontext_range
-    @@makecontext_range ||= begin
-      makecontext_start = makecontext_end = LibDL.dlsym(LibDL::RTLD_DEFAULT, "makecontext")
+  ifdef i686
+    # This is only used for the workaround described in `Exception.unwind`
+    @@makecontext_range : Range(Void*, Void*)?
 
-      while true
-        ret = LibDL.dladdr(makecontext_end, out info)
-        break if ret == 0 || info.sname.null?
-        break unless LibC.strcmp(info.sname, "makecontext") == 0
-        makecontext_end += 1
+    def self.makecontext_range
+      @@makecontext_range ||= begin
+        makecontext_start = makecontext_end = LibC.dlsym(LibC::RTLD_DEFAULT, "makecontext")
+
+        while true
+          ret = LibC.dladdr(makecontext_end, out info)
+          break if ret == 0 || info.dli_sname.null?
+          break unless LibC.strcmp(info.dli_sname, "makecontext") == 0
+          makecontext_end += 1
+        end
+
+        (makecontext_start...makecontext_end)
       end
-
-      (makecontext_start...makecontext_end)
     end
   end
 
@@ -60,7 +66,7 @@ struct CallStack
   struct RepeatedFrame
     getter ip : Void*, count : Int32
 
-    def initialize(@ip)
+    def initialize(@ip : Void*)
       @count = 0
     end
 
@@ -120,15 +126,15 @@ struct CallStack
   end
 
   protected def self.decode_frame(ip, original_ip = ip)
-    if LibDL.dladdr(ip, out info) != 0
-      offset = original_ip - info.saddr
+    if LibC.dladdr(ip, out info) != 0
+      offset = original_ip - info.dli_saddr
 
       if offset == 0
         return decode_frame(ip - 1, original_ip)
       end
 
-      unless info.sname.null?
-        {offset, info.sname}
+      unless info.dli_sname.null?
+        {offset, info.dli_sname}
       end
     end
   end
@@ -137,7 +143,6 @@ end
 class Exception
   getter message : String?
   getter cause : Exception?
-  @callstack : CallStack
 
   def initialize(message : String? = nil, cause : Exception? = nil)
     @message = message
@@ -150,9 +155,7 @@ class Exception
   end
 
   def to_s(io : IO)
-    if @message
-      io << @message
-    end
+    io << @message
   end
 
   def inspect_with_backtrace
@@ -162,7 +165,7 @@ class Exception
   end
 
   def inspect_with_backtrace(io : IO)
-    io << self << " (" << self.class << ")\n"
+    io << @message << " (" << self.class << ")\n"
     backtrace.each do |frame|
       io.puts frame
     end

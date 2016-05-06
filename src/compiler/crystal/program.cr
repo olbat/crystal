@@ -9,43 +9,55 @@ module Crystal
     include MatchesLookup
     include ClassVarContainer
 
-    getter symbols : Set(String)
-    getter global_vars : Hash(String, Global)
+    getter! symbols : Set(String)
+    getter! global_vars : Hash(String, MetaTypeVar)
     getter target_machine : LLVM::TargetMachine?
-    getter splat_expansions : Hash(Def, Type)
-    getter after_inference_types : Set(Type)
-    getter file_modules : Hash(String, FileModule)
-    property vars : Hash(String, MetaVar)
+    getter! splat_expansions : Hash(UInt64, Type)
+    getter! after_inference_types : Set(Type)
+    getter! file_modules : Hash(String, FileModule)
+    property! vars : Hash(String, MetaVar)
     property literal_expander : LiteralExpander?
-    property initialized_global_vars : Set(String)
-    property? wants_doc : Bool
-    property? color : Bool
+    property! initialized_global_vars : Set(String)
+    property? wants_doc : Bool?
+    property? color : Bool?
 
-    @requires : Set(String)
-    @temp_var_counter : Int32
-    @crystal_path : CrystalPath
-    @def_macros : Array(Def)
-    @unions : Hash(Array(UInt64), Type)
-    @macro_expander : MacroExpander?
+    getter! requires : Set(String)
+    getter! temp_var_counter : Int32
+    getter! crystal_path : CrystalPath
+    getter! def_macros : Array(Def)
+    getter! unions : Hash(Array(UInt64), Type)
+    getter! file_modules : Hash(String, FileModule)
+    getter! string_pool
     @flags : Set(String)?
+
+    # Here we store class var initializers and constants, in the
+    # order that they are used. They will be initialized as soon
+    # as the program starts, before the main code.
+    getter! class_var_and_const_initializers
+
+    # The list of class vars and const being typed, to check
+    # a recursive dependency.
+    getter! class_var_and_const_being_typed
 
     def initialize
       super(self, self, "main")
 
       @symbols = Set(String).new
-      @global_vars = {} of String => Global
+      @global_vars = {} of String => MetaTypeVar
       @requires = Set(String).new
       @temp_var_counter = 0
-      @crystal_path = CrystalPath.new
       @vars = MetaVars.new
       @def_macros = [] of Def
-      @splat_expansions = {} of Def => Type
+      @splat_expansions = {} of UInt64 => Type
       @initialized_global_vars = Set(String).new
       @file_modules = {} of String => FileModule
       @unions = {} of Array(UInt64) => Type
       @wants_doc = false
       @color = true
       @after_inference_types = Set(Type).new
+      @string_pool = StringPool.new
+      @class_var_and_const_initializers = [] of ClassVarInitializer | Const
+      @class_var_and_const_being_typed = [] of MetaTypeVar | Const
 
       types = @types = {} of String => Type
 
@@ -97,17 +109,15 @@ module Crystal
       types["StaticArray"] = static_array = @static_array = StaticArrayType.new self, self, "StaticArray", value, ["T", "N"]
       static_array.struct = true
       static_array.declare_instance_var("@buffer", Path.new("T"))
-      static_array.instance_vars_in_initialize = Set.new(["@buffer"])
       static_array.allocated = true
       static_array.allowed_in_generics = false
 
       types["String"] = string = @string = NonGenericClassType.new self, self, "String", reference
-      string.instance_vars_in_initialize = Set.new(["@bytesize", "@length", "@c"])
       string.allocated = true
 
-      freeze_type string.lookup_instance_var("@bytesize"), @int32
-      freeze_type string.lookup_instance_var("@length"), @int32
-      freeze_type string.lookup_instance_var("@c"), @uint8
+      string.declare_instance_var("@bytesize", @int32)
+      string.declare_instance_var("@length", @int32)
+      string.declare_instance_var("@c", @uint8)
 
       types["Class"] = klass = @class = MetaclassType.new(self, object, value, "Class")
       object.metaclass = klass
@@ -115,13 +125,18 @@ module Crystal
       klass.allocated = true
       klass.allowed_in_generics = false
 
-      types["Array"] = @array = GenericClassType.new self, self, "Array", reference, ["T"]
-      types["Exception"] = @exception = NonGenericClassType.new self, self, "Exception", reference
-
       types["Struct"] = struct_t = @struct_t = NonGenericClassType.new self, self, "Struct", value
       struct_t.abstract = true
       struct_t.struct = true
       struct_t.allowed_in_generics = false
+
+      types["Array"] = @array = GenericClassType.new self, self, "Array", reference, ["T"]
+      types["Hash"] = @hash_type = GenericClassType.new self, self, "Hash", reference, ["K", "V"]
+      types["Regex"] = @regex = NonGenericClassType.new self, self, "Regex", reference
+      types["Range"] = range = @range = GenericClassType.new self, self, "Range", struct_t, ["B", "E"]
+      range.struct = true
+
+      types["Exception"] = @exception = NonGenericClassType.new self, self, "Exception", reference
 
       types["Enum"] = enum_t = @enum = NonGenericClassType.new self, self, "Enum", value
       enum_t.abstract = true
@@ -132,8 +147,18 @@ module Crystal
       proc.variadic = true
       proc.allowed_in_generics = false
 
-      types["ARGC_UNSAFE"] = argc_unsafe = Const.new self, self, "ARGC_UNSAFE", Primitive.new(:argc)
-      types["ARGV_UNSAFE"] = argv_unsafe = Const.new self, self, "ARGV_UNSAFE", Primitive.new(:argv)
+      argc_primitive = Primitive.new(:argc)
+      argc_primitive.type = int32
+
+      argv_primitive = Primitive.new(:argv)
+      argv_primitive.type = pointer_of(pointer_of(uint8))
+
+      types["ARGC_UNSAFE"] = argc_unsafe = Const.new self, self, "ARGC_UNSAFE", argc_primitive
+      types["ARGV_UNSAFE"] = argv_unsafe = Const.new self, self, "ARGV_UNSAFE", argv_primitive
+
+      # Make sure to initialize ARGC and ARGV as soon as the program starts
+      class_var_and_const_initializers << argc_unsafe
+      class_var_and_const_initializers << argv_unsafe
 
       argc_unsafe.initialized = true
       argv_unsafe.initialized = true
@@ -146,6 +171,10 @@ module Crystal
       @nil_var = Var.new("<nil_var>", nil_t)
 
       define_primitives
+    end
+
+    private def crystal_path
+      @crystal_path ||= CrystalPath.new(target_triple: target_machine.triple)
     end
 
     def add_def(node : Def)
@@ -169,11 +198,11 @@ module Crystal
     end
 
     def file_module?(filename)
-      @file_modules[filename]?
+      file_modules[filename]?
     end
 
     def file_module(filename)
-      @file_modules[filename] ||= FileModule.new(self, self, filename)
+      file_modules[filename] ||= FileModule.new(self, self, filename)
     end
 
     def check_private(node)
@@ -210,9 +239,25 @@ module Crystal
       array.instantiate [type] of TypeVar
     end
 
+    def hash_of(key_type, value_type)
+      hash_type.instantiate [key_type, value_type] of TypeVar
+    end
+
+    def range_of(from_type, to_type)
+      range.instantiate [from_type, to_type] of TypeVar
+    end
+
     def tuple_of(types)
       type_vars = types.map { |type| type as TypeVar }
       tuple.instantiate(type_vars)
+    end
+
+    def nilable(type)
+      union_of self.nil, type
+    end
+
+    def union_of(type1, type2)
+      union_of([type1, type2] of Type).not_nil!
     end
 
     def union_of(types : Array)
@@ -224,7 +269,7 @@ module Crystal
       else
         types.sort_by! &.opaque_id
         opaque_ids = types.map(&.opaque_id)
-        @unions[opaque_ids] ||= make_union_type(types, opaque_ids)
+        unions[opaque_ids] ||= make_union_type(types, opaque_ids)
       end
     end
 
@@ -289,16 +334,16 @@ module Crystal
     end
 
     def add_to_requires(filename)
-      if @requires.includes? filename
+      if requires.includes? filename
         false
       else
-        @requires.add filename
+        requires.add filename
         true
       end
     end
 
     def find_in_path(filename, relative_to = nil)
-      @crystal_path.find filename, relative_to
+      crystal_path.find filename, relative_to
     end
 
     def load_libs
@@ -314,47 +359,17 @@ module Crystal
       end
     end
 
-    @class : MetaclassType?
-    @proc : FunType?
-    @enum : NonGenericClassType?
-    @object : NonGenericClassType?
-    @reference : NonGenericClassType?
-    @value : NonGenericClassType?
-    @number : NonGenericClassType?
-    @no_return : NoReturnType?
-    @void : VoidType?
-    @nil : NilType?
-    @bool : BoolType?
-    @char : CharType?
-    @int : NonGenericClassType?
-    @int8 : IntegerType?
-    @uint8 : IntegerType?
-    @int16 : IntegerType?
-    @uint16 : IntegerType?
-    @int32 : IntegerType?
-    @uint32 : IntegerType?
-    @int64 : IntegerType?
-    @uint64 : IntegerType?
-    @float : NonGenericClassType?
-    @float32 : FloatType?
-    @float64 : FloatType?
-    @symbol : SymbolType?
-    @pointer : PointerType?
-    @tuple : TupleType?
-    @static_array : StaticArrayType?
-    @nil_var : Var?
-    @string : NonGenericClassType?
-    @exception : NonGenericClassType?
-    @array : GenericClassType?
-    @struct_t : NonGenericClassType?
-
     {% for name in %w(object no_return value number reference void nil bool char int int8 int16 int32 int64
                      uint8 uint16 uint32 uint64 float float32 float64 string symbol pointer array static_array
-                     exception tuple proc enum) %}
+                     exception tuple proc enum range regex) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end
     {% end %}
+
+    def hash_type
+      @hash_type.not_nil!
+    end
 
     # Finds the IntegerType that matches the given Int value
     def int?(int)
@@ -402,7 +417,9 @@ module Crystal
     end
 
     def new_temp_var_name
-      "__temp_#{@temp_var_counter += 1}"
+      counter = temp_var_counter + 1
+      @temp_var_counter = counter
+      "__temp_#{counter}"
     end
 
     def type_desc
@@ -418,11 +435,6 @@ module Crystal
       type.struct = true
       type.allocated = true
       type.allowed_in_generics = false
-    end
-
-    private def freeze_type(var, type)
-      var.set_type type
-      var.freeze_type = type
     end
 
     def to_s(io)
