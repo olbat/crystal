@@ -1,3 +1,10 @@
+crystal (0.16.0-1.1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload.
+  * Update to upstream version 0.16.0
+
+ -- Luc Sarzyniec <debian@olbat.net>  Fri, 06 May 2016 12:26:40 +0000
+
 crystal (0.15.0-1.1) UNRELEASED; urgency=medium
 
   * Non-maintainer upload.
