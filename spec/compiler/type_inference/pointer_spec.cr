@@ -56,7 +56,7 @@ describe "Type inference: pointer" do
   end
 
   it "types nil or pointer type" do
-    result = assert_type("1 == 1 ? nil : Pointer(Int32).new(0_u64)") { |mod| union_of(mod.nil, mod.pointer_of(mod.int32)) }
+    result = assert_type("1 == 1 ? nil : Pointer(Int32).new(0_u64)") { nilable pointer_of(int32) }
     result.node.type.should be_a(NilablePointerType)
   end
 
@@ -67,7 +67,7 @@ describe "Type inference: pointer" do
         fun foo : T?
       end
       LibC.foo
-      )) { |mod| union_of(mod.nil, mod.types["LibC"].types["T"]) }
+      )) { nilable types["LibC"].types["T"] }
     result.node.type.should be_a(NilablePointerType)
   end
 
@@ -128,5 +128,45 @@ describe "Type inference: pointer" do
       (1 || pointerof(a)).nil?
       ),
       "use `null?`"
+  end
+
+  it "can assign nil to void pointer" do
+    assert_type(%(
+      ptr = Pointer(Void).malloc(1_u64)
+      ptr.value = ptr.value
+      )) { nil_type }
+  end
+
+  it "can pass any pointer to something expecting void* in lib call" do
+    assert_type(%(
+      lib LibFoo
+        fun foo(x : Void*) : Float64
+      end
+
+      LibFoo.foo(Pointer(Int32).malloc(1_u64))
+      )) { float64 }
+  end
+
+  it "can pass any pointer to something expecting void* in lib call, with to_unsafe" do
+    assert_type(%(
+      lib LibFoo
+        fun foo(x : Void*) : Float64
+      end
+
+      class Foo
+        def to_unsafe
+          Pointer(Int32).malloc(1_u64)
+        end
+      end
+
+      LibFoo.foo(Foo.new)
+      )) { float64 }
+  end
+
+  it "errors if doing Pointer.allocate" do
+    assert_error %(
+      Pointer(Int32).allocate
+      ),
+      "can't create instance of a pointer type"
   end
 end

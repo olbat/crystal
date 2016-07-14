@@ -8,7 +8,10 @@ module Crystal::Macros
   # Outputs the current macro's buffer to the standard output. Useful for debugging
   # a macro to see what's being generated. Use it like `{{debug()}}`, the parenthesis
   # are mandatory.
-  def debug : Nop
+  #
+  # By default, the output is tried to be formatted using Crystal's
+  # formatter, but you can disable this by passing `false` to this method.
+  def debug(format = true) : Nop
   end
 
   # Gets the value of an environment variable at compile-time, or `nil` if it doesn't exist.
@@ -246,6 +249,14 @@ module Crystal::Macros
 
     # Similar to `String#=~`.
     def =~(range : RegexLiteral) : BoolLiteral
+    end
+
+    # Similar to `String#>`
+    def >(other : StringLiteral | MacroId) : BoolLiteral
+    end
+
+    # Similar to `String#<`
+    def <(other : StringLiteral | MacroId) : BoolLiteral
     end
 
     # Similar to `String#+`.
@@ -555,6 +566,27 @@ module Crystal::Macros
 
   # A range literal.
   class RangeLiteral < ASTNode
+    # Similar to `Range#begin`
+    def begin : ASTNode
+    end
+
+    # Similar to `Range#end`
+    def end : ASTNode
+    end
+
+    # Similar to `Range#excludes_end?`
+    def excludes_end? : ASTNode
+    end
+
+    # Similar to `Enumerable#map` for a `Range`.
+    # Only works on ranges of `NumberLiteral`s considered as integers.
+    def map : ArrayLiteral
+    end
+
+    # Similar to `Enumerable#to_a` for a `Range`.
+    # Only works on ranges of `NumberLiteral`s considered as integers.
+    def to_a : ArrayLiteral
+    end
   end
 
   # A regex literal.
@@ -717,7 +749,7 @@ module Crystal::Macros
     end
   end
 
-  # class Fun < ASTNode
+  # class ProcNotation < ASTNode
   # end
 
   # A method definition.
@@ -851,10 +883,10 @@ module Crystal::Macros
   # class ExceptionHandler < ASTNode
   # end
 
-  # class FunLiteral < ASTNode
+  # class ProcLiteral < ASTNode
   # end
 
-  # class FunPointer < ASTNode
+  # class ProcPointer < ASTNode
   # end
 
   # class Union < ASTNode
@@ -1092,8 +1124,26 @@ module Crystal::Macros
     def abstract? : BoolLiteral
     end
 
+    # Returns true if this type is a union type, false otherwise.
+    #
+    # See also: `union_types`.
+    def union? : BoolLiteral
+    end
+
+    # Returns the types comforming a union type, if this is a union type.
+    # Gives a compile error otherwise.
+    #
+    # See also: `union?`.
+    def union_types : ArrayLiteral(TypeNode)
+    end
+
     # Returns the fully qualified name of this type.
     def name : MacroId
+    end
+
+    # Returns the type variables of the generic type. If the type is not
+    # generic, an empty array is returned.
+    def type_vars : ArrayLiteral(TypeNode)
     end
 
     # Returns the instance variables of this type.
@@ -1109,11 +1159,17 @@ module Crystal::Macros
     end
 
     # Returns all subclasses of this type.
-    def subclasses : ArrayLiteral(TypeNode)
+    def all_subclasses : ArrayLiteral(TypeNode)
     end
 
     # Returns the constants and types defined by this type.
-    def subclasses : ArrayLiteral(MacroId)
+    def constants : ArrayLiteral(MacroId)
+    end
+
+    # Returns true if this type has a constant. For example `DEFAULT_OPTIONS`
+    # (the name you pass to this method is "DEFAULT_OPTIONS" or :DEFAULT_OPTIONS
+    # in this cases).
+    def has_constant?(name : StringLiteral | SymbolLiteral) : BoolLiteral
     end
 
     # Returns the instance methods defined by this type, without including
@@ -1127,38 +1183,47 @@ module Crystal::Macros
     def has_attribute?(name : StringLiteral | SymbolLiteral) : BoolLiteral
     end
 
-    # Returns true if this type has a constant. For example `DEFAULT_OPTIONS`
-    # (the name you pass to this method is "DEFAULT_OPTIONS" or :DEFAULT_OPTIONS
-    # in this cases).
-    def has_constant?(name : StringLiteral | SymbolLiteral) : BoolLiteral
-    end
-
     # Returns the number of elements in this tuple type or tuple metaclass type.
     # Gives a compile error if this is not one of those types.
     def size : NumberLiteral
     end
 
-    # Returns true if this type is a union type, false otherwise.
-    #
-    # See also: `union_types`.
-    def union? : BoolLiteral
+    # Returns the keys in this named tuple type.
+    # Gives a compile error if this is not a named tuple type.
+    def keys : ArrayLiteral(MacroId)
     end
 
-    # Returns the types comforming a union type, if this is a union type.
-    # Gives a compile error otherwise.
-    #
-    # See also: `union?`.
-    def union_types : ArrayLiteral(TypeNode)
-    end
-
-    # Returns the type variables of the generic type. If the type is not
-    # generic, an empty array is returned.
-    def type_vars : ArrayLiteral(TypeNode)
+    # Returns the type for the given key in this named tuple type.
+    # Gives a compile error if this is not a named tuple type.
+    def [](key : SymbolLiteral | MacroId) : TypeNode | NilLiteral
     end
 
     # Returns the class of this type. With this you can, for example, obtain class
     # methods by invoking `type.class.methods`.
     def class : TypeNode
+    end
+
+    # Returns the instance type of this type, if it's a class type,
+    # or `self` otherwise. This is the opposite of `#class`.
+    def instance : TypeNode
+    end
+
+    # Returns `true` if *other* is an ancestor of `self`.
+    def <(other : TypeNode) : BoolLiteral
+    end
+
+    # Returns `true` if `self` is the same as *other* or if
+    # *other* is an ancestor of `self`.
+    def <=(other : TypeNode) : BoolLiteral
+    end
+
+    # Returns `true` if `self` is an ancestor of *other*.
+    def >(other : TypeNode) : BoolLiteral
+    end
+
+    # Returns `true` if *other* is the same as `self` or if
+    # `self` is an ancestor of *other*.
+    def >=(other : TypeNode) : BoolLiteral
     end
   end
 

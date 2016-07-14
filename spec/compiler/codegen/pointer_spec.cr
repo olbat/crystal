@@ -371,4 +371,90 @@ describe "Code gen: pointer" do
       foo.x
       )).to_i.should eq(123)
   end
+
+  it "can assign nil to void pointer" do
+    codegen(%(
+      require "prelude"
+
+      ptr = Pointer(Void).malloc(1_u64)
+      ptr.value = ptr.value
+      ))
+  end
+
+  it "can pass any pointer to something expecting void* in lib call" do
+    codegen(%(
+      lib LibFoo
+        fun foo(x : Void*) : Float64
+      end
+
+      LibFoo.foo(Pointer(Int32).malloc(1_u64))
+      ))
+  end
+
+  it "can pass any pointer to something expecting void* in lib call, with to_unsafe" do
+    codegen(%(
+      lib LibFoo
+        fun foo(x : Void*) : Float64
+      end
+
+      class Foo
+        def to_unsafe
+          Pointer(Int32).malloc(1_u64)
+        end
+      end
+
+      LibFoo.foo(Foo.new)
+      ))
+  end
+
+  it "uses correct llvm module for typedef metaclass (#2877)" do
+    run(%(
+      require "prelude"
+
+      lib LibFoo
+        type Foo = Void*
+        type Bar = Void*
+      end
+
+      class Class
+        def foo
+          foo(1)
+        end
+
+        def foo(x)
+        end
+      end
+
+      struct Pointer
+        def foo
+          T.foo
+        end
+      end
+
+      foo = uninitialized LibFoo::Foo*
+      bar = uninitialized LibFoo::Bar*
+      foo.foo
+      bar.foo
+      1
+      ))
+  end
+
+  it "generates correct code for Pointer.malloc(0) (#2905)" do
+    run(%(
+      require "prelude"
+
+      class Foo
+        def initialize(@value : Int32)
+        end
+
+        def value
+          @value
+        end
+      end
+
+      foo = Foo.new(3)
+      Pointer(Int32 | UInt8[9]).malloc(0_u64)
+      foo.value
+      )).to_i.should eq(3)
+  end
 end

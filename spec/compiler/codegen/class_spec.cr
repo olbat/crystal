@@ -573,7 +573,7 @@ describe "Code gen: class" do
   it "notifies superclass recursively on inheritance (#576)" do
     run(%(
       class Class
-        macro def name : String
+        def name : String
           {{ @type.name.stringify }}
         end
 
@@ -838,6 +838,21 @@ describe "Code gen: class" do
       end
 
       crash
+      ))
+  end
+
+  it "doesn't crash on abstract class never instantiated (#2840)" do
+    codegen(%(
+      require "prelude"
+
+      abstract class Foo
+      end
+
+      if 1 == 2
+        true
+      else
+        Pointer(Foo).malloc(1_u64).value.foo
+      end
       ))
   end
 end

@@ -85,7 +85,7 @@ module HTTP
 
     # Get where the header value starts (skip space)
     middle_index = colon_index + 1
-    while middle_index < bytesize && cstr[middle_index].chr.whitespace?
+    while middle_index < bytesize && cstr[middle_index].unsafe_chr.whitespace?
       middle_index += 1
     end
 
@@ -199,7 +199,7 @@ module HTTP
   def self.parse_time(time_str : String) : Time?
     DATE_PATTERNS.each do |pattern|
       begin
-        return Time.parse(time_str, pattern)
+        return Time.parse(time_str, pattern, kind: Time::Kind::Utc)
       rescue Time::Format::Error
       end
     end
@@ -209,7 +209,7 @@ module HTTP
 
   def self.rfc1123_date(time : Time) : String
     # TODO: GMT should come from the Time classes instead
-    time.to_s("%a, %d %b %Y %H:%M:%S GMT")
+    time.to_utc.to_s("%a, %d %b %Y %H:%M:%S GMT")
   end
 
   # Returns the default status message of the given HTTP status code.

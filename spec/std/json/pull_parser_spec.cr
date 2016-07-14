@@ -171,9 +171,9 @@ describe JSON::PullParser do
       {"string", %("hello")},
       {"array", %([10, 20, [30], [40]])},
       {"object", %({"foo": [1, 2], "bar": {"baz": [3]}})},
-    ].each do |tuple|
-      it "skips #{tuple[0]}" do
-        pull = JSON::PullParser.new("[1, #{tuple[1]}, 2]")
+    ].each do |(desc, obj)|
+      it "skips #{desc}" do
+        pull = JSON::PullParser.new("[1, #{obj}, 2]")
         pull.read_array do
           pull.read_int.should eq(1)
           pull.skip
@@ -303,5 +303,6 @@ describe JSON::PullParser do
     assert_raw %("hello")
     assert_raw %([1,"hello",true,false,null,[1,2,3]])
     assert_raw %({"foo":[1,2,{"bar":[1,"hello",true,false,1.5]}]})
+    assert_raw %({"foo":"bar"})
   end
 end

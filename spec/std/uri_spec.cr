@@ -83,9 +83,7 @@ describe "URI" do
       {"%E3%81%AA%E3%81%AA", "なな"},
       {"%e3%81%aa%e3%81%aa", "なな"},
       {"%27Stop%21%27+said+Fred", "'Stop!'+said+Fred"},
-    }.each do |tuple|
-      from, to = tuple
-
+    }.each do |(from, to)|
       it "unescapes #{from}" do
         URI.unescape(from).should eq(to)
       end
@@ -121,10 +119,8 @@ describe "URI" do
       {"hello%252%2Bworld", "hello%2+world"},
       {"%E3%81%AA%E3%81%AA", "なな"},
       {"%27Stop%21%27%20said%20Fred", "'Stop!' said Fred"},
-      {"%FF", String.new(1) { |buf| buf.value = 255_u8; {1, 0} }},
       {"%0A", "\n"},
-    ].each do |tuple|
-      from, to = tuple
+    ].each do |(from, to)|
       it "escapes #{to}" do
         URI.escape(to).should eq(from)
       end
@@ -133,6 +129,20 @@ describe "URI" do
         String.build do |str|
           URI.escape(to, str)
         end.should eq(from)
+      end
+    end
+
+    describe "invalid utf8 strings" do
+      input = String.new(1) { |buf| buf.value = 255_u8; {1, 0} }
+
+      it "escapes without failing" do
+        URI.escape(input).should eq("%FF")
+      end
+
+      it "escapes to IO without failing" do
+        String.build do |str|
+          URI.escape(input, str)
+        end.should eq("%FF")
       end
     end
 

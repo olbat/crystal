@@ -1,7 +1,7 @@
 require "c/stdio"
 require "c/string"
+require "c/dlfcn"
 require "unwind"
-require "dl"
 
 def caller
   CallStack.new.printable_backtrace
@@ -143,15 +143,17 @@ end
 class Exception
   getter message : String?
   getter cause : Exception?
+  property callstack : CallStack?
 
-  def initialize(message : String? = nil, cause : Exception? = nil)
-    @message = message
-    @cause = cause
-    @callstack = CallStack.new
+  def initialize(@message : String? = nil, @cause : Exception? = nil)
   end
 
   def backtrace
-    @callstack.printable_backtrace
+    self.backtrace?.not_nil!
+  end
+
+  def backtrace?
+    @callstack.try &.printable_backtrace
   end
 
   def to_s(io : IO)
@@ -166,18 +168,10 @@ class Exception
 
   def inspect_with_backtrace(io : IO)
     io << @message << " (" << self.class << ")\n"
-    backtrace.each do |frame|
+    backtrace.try &.each do |frame|
       io.puts frame
     end
     io.flush
-  end
-end
-
-module Enumerable(T)
-  class EmptyError < Exception
-    def initialize(message = "Empty enumerable")
-      super(message)
-    end
   end
 end
 

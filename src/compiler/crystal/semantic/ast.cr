@@ -23,6 +23,7 @@ module Crystal
     property input_observer : Call?
 
     @dirty = false
+    @propagating_after_cleanup = false
 
     @type : Type?
 
@@ -189,6 +190,7 @@ module Crystal
     end
 
     def update(from)
+      return if @propagating_after_cleanup
       return if @type.same? from.type?
 
       if dependencies.size == 1 || !@type
@@ -197,7 +199,47 @@ module Crystal
         new_type = Type.merge dependencies
       end
 
-      return if @type.same? new_type
+      if @type.same? new_type
+        # If we are in the cleanup phase it might happen that a dependency's
+        # type changed (from) but our type didn't. This might happen if
+        # there's a circular dependencies in nodes (while and blocks can
+        # cause this), so we basically need to recompute all types in the
+        # cycle (and depending types).
+        #
+        # To solve this, we set our type to NoReturn so observers
+        # compute their type without taking this note into account.
+        # Later, we compute our type from our dependencies and propagate
+        # types as usual.
+        #
+        # To avoid infinite recursion we use the `@propagating_after_cleanup`
+        # flag, which prevents computing and propagating types for this
+        # node while we are doing the above logic.
+        if dependencies.size > 0 && (from_type = from.type?) && from_type.program.in_cleanup_phase?
+          set_type(from_type.program.no_return)
+
+          @propagating_after_cleanup = true
+          @dirty = true
+          propagate
+
+          new_type = Type.merge dependencies
+          if new_type
+            set_type_from(map_type(new_type), from)
+          else
+            unless @type
+              @propagating_after_cleanup = false
+              return
+            end
+            set_type(nil)
+          end
+
+          @dirty = true
+          propagate
+          @propagating_after_cleanup = false
+          return
+        else
+          return
+        end
+      end
 
       if new_type
         set_type_from(map_type(new_type), from)
@@ -384,6 +426,15 @@ module Crystal
     def match(objects, &block)
       Splat.match(self, objects) do |arg, arg_index, object, object_index|
         yield arg, arg_index, object, object_index
+      end
+    end
+
+    def map_type(type)
+      # If the return type is nil, our type is nil
+      if freeze_type.try &.nil_type?
+        freeze_type
+      else
+        type
       end
     end
   end
@@ -594,8 +645,8 @@ module Crystal
     property! external : External
   end
 
-  class FunLiteral
-    property force_void = false
+  class ProcLiteral
+    property force_nil = false
     property expected_return_type : Type?
 
     def update(from = nil)
@@ -603,20 +654,20 @@ module Crystal
       return unless self.def.type?
 
       types = self.def.args.map &.type
-      return_type = @force_void ? self.def.type.program.void : self.def.type
+      return_type = @force_nil ? self.def.type.program.nil : self.def.type
 
       expected_return_type = @expected_return_type
-      if expected_return_type && !expected_return_type.void? && !return_type.implements?(expected_return_type)
+      if expected_return_type && !expected_return_type.nil_type? && !return_type.implements?(expected_return_type)
         raise "expected block to return #{expected_return_type.devirtualize}, not #{return_type}"
       end
 
       types << (expected_return_type || return_type)
 
-      self.type = self.def.type.program.fun_of(types)
+      self.type = self.def.type.program.proc_of(types)
     end
 
     def return_type
-      @type.as(FunInstanceType).return_type
+      @type.as(ProcInstanceType).return_type
     end
   end
 
@@ -628,7 +679,7 @@ module Crystal
     def update(from = nil)
       instance_type = self.instance_type
       if instance_type.is_a?(NamedTupleType)
-        names_and_types = named_args.not_nil!.map do |named_arg|
+        entries = named_args.not_nil!.map do |named_arg|
           node = named_arg.value
 
           if node.is_a?(Path) && (syntax_replacement = node.syntax_replacement)
@@ -649,19 +700,32 @@ module Crystal
           Crystal.check_type_allowed_in_generics(node, node_type, "can't use #{node_type} as generic type argument")
           node_type = node_type.virtual_type
 
-          {named_arg.name, node_type}
+          NamedArgumentType.new(named_arg.name, node_type)
         end
 
-        generic_type = instance_type.instantiate_named_args(names_and_types)
+        generic_type = instance_type.instantiate_named_args(entries)
       else
-        type_vars_types = type_vars.map do |node|
+        type_vars_types = Array(TypeVar).new(type_vars.size + 1)
+        type_vars.each do |node|
           if node.is_a?(Path) && (syntax_replacement = node.syntax_replacement)
             node = syntax_replacement
+          end
+          if node.is_a?(SizeOf) && (expanded = node.expanded)
+            node = expanded
+          end
+          if node.is_a?(InstanceSizeOf) && (expanded = node.expanded)
+            node = expanded
           end
 
           case node
           when NumberLiteral
             type_var = node
+          when Splat
+            type = node.type?
+            return unless type.is_a?(TupleInstanceType)
+
+            type_vars_types.concat(type.tuple_types)
+            next
           else
             node_type = node.type?
             return unless node_type
@@ -689,7 +753,7 @@ module Crystal
             end
           end
 
-          type_var.as(TypeVar)
+          type_vars_types << type_var
         end
 
         begin
@@ -731,11 +795,11 @@ module Crystal
     def update(from = nil)
       return unless entries.all? &.value.type?
 
-      names_and_types = entries.map do |element|
-        {element.key, element.value.type}
+      entries = entries.map do |element|
+        NamedArgumentType.new(element.key, element.value.type)
       end
 
-      named_tuple_type = mod.named_tuple_of(names_and_types)
+      named_tuple_type = mod.named_tuple_of(entries)
 
       if generic_type_too_nested?(named_tuple_type.generic_nest)
         raise "named tuple type too nested: #{named_tuple_type}"
@@ -786,7 +850,7 @@ module Crystal
     # a Def or a Block.
     property context : ASTNode | NonGenericModuleType | Nil
 
-    # A variable is closured if it's used in a FunLiteral context
+    # A variable is closured if it's used in a ProcLiteral context
     # where it wasn't created.
     property closured = false
 
@@ -824,6 +888,7 @@ module Crystal
       io << " (nil-if-read)" if nil_if_read
       io << " (closured)" if closured
       io << " (assigned-to)" if assigned_to
+      io << " (object id: #{object_id})"
     end
   end
 
@@ -844,6 +909,9 @@ module Crystal
 
     # The (optional) initial value of a class variable
     property initializer : ClassVarInitializer?
+
+    # Is this variable "unsafe" (no need to check if it was initialized)?
+    property uninitialized = false
 
     def kind
       case name[0]
@@ -892,6 +960,135 @@ module Crystal
     end
   end
 
+  # Ficticious node to bind yield expressions to block arguments
+  class YieldBlockBinder < ASTNode
+    getter block
+
+    def initialize(@mod : Program, @block : Block)
+      @yields = [] of {Yield, Array(Var)?}
+    end
+
+    def add_yield(node : Yield, yield_vars : Array(Var)?)
+      @yields << {node, yield_vars}
+      node.exps.each &.add_observer(self)
+    end
+
+    def update(from = nil)
+      # We compute all the types for each block arguments
+      args_size = block.args.size
+      block_arg_types = Array(Array(Type)?).new(args_size, nil)
+      splat_index = block.splat_index
+
+      @yields.each do |(a_yield, yield_vars)|
+        i = 0
+
+        # Gather all exps types and then assign to block_arg_types.
+        # We need to do that in case of a block splat argument, we need
+        # to split and create tuple types for that case.
+        exps_types = Array(Type).new(a_yield.exps.size)
+
+        a_yield.exps.each do |exp|
+          exp_type = exp.type?
+          return unless exp_type
+
+          if exp.is_a?(Splat)
+            unless exp_type.is_a?(TupleInstanceType)
+              exp.raise "expected splat expression to be a tuple type, not #{exp_type}"
+            end
+
+            exps_types.concat(exp_type.tuple_types)
+            i += exp_type.tuple_types.size
+          else
+            exps_types << exp_type
+            i += 1
+          end
+        end
+
+        # Check if there are missing yield expressions to match
+        # the (optional) block signature, and if they match the declared types
+        if yield_vars
+          if exps_types.size < yield_vars.size
+            a_yield.raise "wrong number of yield arguments (given #{exps_types.size}, expected #{yield_vars.size})"
+          end
+
+          # Check that the types match
+          i = 0
+          yield_vars.zip(exps_types) do |yield_var, exp_type|
+            unless exp_type.implements?(yield_var.type)
+              a_yield.raise "argument ##{i + 1} of yield expected to be #{yield_var.type}, not #{exp_type}"
+            end
+            i += 1
+          end
+        end
+
+        # Now move exps_types to block_arg_types
+        if splat_index
+          # Error if there are less expressions than the number of block arguments
+          if exps_types.size < (args_size - 1)
+            block.raise "too many block arguments (given #{args_size - 1}+, expected maximum #{exps_types.size}+)"
+          end
+
+          j = 0
+          args_size.times do |i|
+            types = block_arg_types[i] ||= [] of Type
+            if i == splat_index
+              tuple_types = exps_types[i, exps_types.size - (args_size - 1)]
+              types << @mod.tuple_of(tuple_types)
+              j += tuple_types.size
+            else
+              types << exps_types[j]
+              j += 1
+            end
+          end
+        else
+          # Check if tuple unpacking is needed
+          if exps_types.size == 1 &&
+             (exp_type = exps_types.first).is_a?(TupleInstanceType) &&
+             args_size > 1
+            if block.args.size > exp_type.tuple_types.size
+              block.raise "too many block arguments (given #{block.args.size}, expected maximum #{exp_type.tuple_types.size})"
+            end
+
+            exp_type.tuple_types.each_with_index do |tuple_type, i|
+              break if i >= block_arg_types.size
+
+              types = block_arg_types[i] ||= [] of Type
+              types << tuple_type
+            end
+          else
+            if block.args.size > exps_types.size
+              block.raise "too many block arguments (given #{block.args.size}, expected maximum #{exps_types.size})"
+            end
+
+            exps_types.each_with_index do |exp_type, i|
+              break if i >= block_arg_types.size
+
+              types = block_arg_types[i] ||= [] of Type
+              types << exp_type
+            end
+          end
+        end
+      end
+
+      block.args.each_with_index do |arg, i|
+        block_arg_type = block_arg_types[i]
+        if block_arg_type
+          arg_type = Type.merge(block_arg_type) || @mod.nil
+          if i == splat_index && !arg_type.is_a?(TupleInstanceType)
+            arg.raise "block splat argument must be a tuple type, not #{arg_type}"
+          end
+          arg.type = arg_type
+        else
+          # Skip, no type info found in this position
+        end
+      end
+    end
+
+    def clone_without_location
+      self
+    end
+  end
+
   class Block
     property visited = false
     property scope : Type?
@@ -899,6 +1096,7 @@ module Crystal
     property after_vars : MetaVars?
     property context : Def | NonGenericModuleType | Nil
     property fun_literal : ASTNode?
+    property binder : YieldBlockBinder?
 
     def break
       @break ||= Var.new("%break")
@@ -922,7 +1120,7 @@ module Crystal
     property! target : Def
   end
 
-  class FunPointer
+  class ProcPointer
     property! call : Call
 
     def map_type(type)
@@ -931,7 +1129,7 @@ module Crystal
       arg_types = call.args.map &.type
       arg_types.push call.type
 
-      call.type.program.fun_of(arg_types)
+      call.type.program.proc_of(arg_types)
     end
   end
 
@@ -946,7 +1144,8 @@ module Crystal
   {% for name in %w(And Or
                    ArrayLiteral HashLiteral RegexLiteral RangeLiteral
                    Case StringInterpolation
-                   MacroExpression MacroIf MacroFor MultiAssign) %}
+                   MacroExpression MacroIf MacroFor MultiAssign
+                   SizeOf InstanceSizeOf Global) %}
     class {{name.id}}
       include ExpandableNode
     end

@@ -61,7 +61,7 @@ describe "Global inference" do
     assert_type(%(
       $x = nil
       $x
-      )) { |mod| mod.nil }
+      )) { nil_type }
   end
 
   it "infers type from string literal" do
@@ -408,7 +408,7 @@ describe "Global inference" do
       end
 
       $x
-      )) { nilable fun_of(int32, int32) }
+      )) { nilable proc_of(int32, int32) }
   end
 
   it "infers from block argument without restriction" do
@@ -418,7 +418,7 @@ describe "Global inference" do
       end
 
       $x
-      )) { nilable fun_of(void) }
+      )) { nilable proc_of(void) }
   end
 
   it "infers type from !" do
@@ -476,17 +476,6 @@ describe "Global inference" do
       $x = CONST
       $x
       )) { int32 }
-  end
-
-  it "doesn't crash when trying to infer from a recursive constant definition" do
-    assert_error %(
-      A = B
-      B = A
-
-      $x = A
-      $x
-      ),
-      "recursive dependency of constant A: A -> B -> A"
   end
 
   it "doesn't infer from redefined method" do
@@ -610,7 +599,7 @@ describe "Global inference" do
       $x : Int32
       $x
       ),
-      "global variable '$x' must be Int32, not Nil"
+      "global variable '$x' is read here before it was initialized, rendering it nilable, but its type is Int32"
   end
 
   it "declares global variable and reads it inside method" do
@@ -686,5 +675,24 @@ describe "Global inference" do
       end
       ),
       "can't use Class as the type of global variable $class, use a more specific type"
+  end
+
+  it "gives correct error when trying to use Int as a global variable type" do
+    assert_error %(
+      $x : Int
+      ),
+      "can't use Int as the type of a global variable yet, use a more specific type"
+  end
+
+  it "declares uninitialized (#2935)" do
+    assert_type(%(
+      $x = uninitialized Int32
+
+      def foo
+        $x
+      end
+
+      foo
+      )) { int32 }
   end
 end

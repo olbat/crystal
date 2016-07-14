@@ -2,6 +2,7 @@ module Crystal
   abstract class BaseTypeVisitor < Visitor
     getter mod : Program
     property types : Array(Type)
+    property in_type_args
 
     @free_vars : Hash(String, TypeVar)?
     @type_lookup : Type?
@@ -16,6 +17,7 @@ module Crystal
       @attributes = nil
       @lib_def_pass = 0
       @in_type_args = 0
+      @in_generic_args = 0
       @block_nest = 0
       @in_is_a = false
     end
@@ -30,11 +32,6 @@ module Crystal
       type = resolve_ident(node)
       case type
       when Const
-        existing = @mod.class_var_and_const_being_typed.find &.same?(type)
-        if existing
-          raise_recursive_dependency node, type
-        end
-
         if !type.value.type? && !type.visited?
           type.visited = true
 
@@ -44,20 +41,17 @@ module Crystal
           type_visitor.types = type.scope_types
           type_visitor.scope = type.scope
 
-          @mod.class_var_and_const_being_typed.push type
           type.value.accept type_visitor
-          @mod.class_var_and_const_being_typed.pop
 
           type.vars = const_def.vars
           type.visitor = self
           type.used = true
-          @mod.class_var_and_const_initializers << type
         end
 
         node.target_const = type
         node.bind_to type.value
       when Type
-        if type.is_a?(AliasType) && @in_type_args == 0 && !type.aliased_type?
+        if type.is_a?(AliasType) && @in_generic_args == 0 && !type.aliased_type?
           if type.value_processed?
             node.raise "infinite recursive definition of alias #{type}"
           else
@@ -73,15 +67,6 @@ module Crystal
       end
     end
 
-    private def raise_recursive_dependency(node, const_or_class_var)
-      msg = mod.class_var_and_const_being_typed.join(" -> ") { |x| const_or_class_var_name(x) }
-      if const_or_class_var.is_a?(Const)
-        node.raise "recursive dependency of constant #{const_or_class_var}: #{msg} -> #{const_or_class_var_name(const_or_class_var)}"
-      else
-        node.raise "recursive dependency of class var #{const_or_class_var_name(const_or_class_var)}: #{msg} -> #{const_or_class_var_name(const_or_class_var)}"
-      end
-    end
-
     private def const_or_class_var_name(const_or_class_var)
       if const_or_class_var.is_a?(Const)
         const_or_class_var.to_s
@@ -90,10 +75,12 @@ module Crystal
       end
     end
 
-    def visit(node : Fun)
+    def visit(node : ProcNotation)
       @in_type_args += 1
+      @in_generic_args += 1
       node.inputs.try &.each &.accept(self)
       node.output.try &.accept(self)
+      @in_generic_args -= 1
       @in_type_args -= 1
 
       if inputs = node.inputs
@@ -108,18 +95,20 @@ module Crystal
         types << mod.void
       end
 
-      node.type = mod.fun_of(types)
+      node.type = mod.proc_of(types)
 
       false
     end
 
     def visit(node : Union)
+      @in_type_args += 1
       node.types.each &.accept self
+      @in_type_args -= 1
 
       old_in_is_a, @in_is_a = @in_is_a, false
 
       types = node.types.map do |subtype|
-        instance_type = subtype.type.instance_type
+        instance_type = subtype.type
         unless instance_type.allowed_in_generics?
           subtype.raise "can't use #{instance_type} in unions yet, use a more specific type"
         end
@@ -159,8 +148,10 @@ module Crystal
       node.name.accept self
 
       @in_type_args += 1
+      @in_generic_args += 1
       node.type_vars.each &.accept self
       node.named_args.try &.each &.value.accept self
+      @in_generic_args -= 1
       @in_type_args -= 1
 
       return false if node.type?
@@ -174,7 +165,7 @@ module Crystal
         unless node.named_args
           node.raise "can only instantiate NamedTuple with named arguments"
         end
-      elsif instance_type.variadic
+      elsif instance_type.splat_index
         if node.named_args
           node.raise "can only use named arguments with NamedTuple"
         end
@@ -188,8 +179,24 @@ module Crystal
           node.raise "can only use named arguments with NamedTuple"
         end
 
-        if instance_type.type_vars.size != node.type_vars.size
-          node.wrong_number_of "type vars", instance_type, node.type_vars.size, instance_type.type_vars.size
+        # Need to count type vars because there might be splats
+        type_vars_count = 0
+        knows_count = true
+        node.type_vars.each do |type_var|
+          if type_var.is_a?(Splat)
+            if type_var.type?
+              type_vars_count += type_var.type.as(TupleInstanceType).size
+            else
+              knows_count = false
+              break
+            end
+          else
+            type_vars_count += 1
+          end
+        end
+
+        if knows_count && instance_type.type_vars.size != type_vars_count
+          node.wrong_number_of "type vars", instance_type, type_vars_count, instance_type.type_vars.size
         end
       end
 
@@ -229,8 +236,9 @@ module Crystal
           node_return_type.accept self
         end
         return_type = check_primitive_like(node_return_type)
+        return_type = @mod.nil if return_type.void?
       else
-        return_type = @mod.void
+        return_type = @mod.nil
       end
 
       external = node.external?
@@ -268,7 +276,7 @@ module Crystal
 
         inferred_return_type = @mod.type_merge([node_body.type?, external.type?])
 
-        if return_type && return_type != @mod.void && inferred_return_type != return_type
+        if return_type && return_type != @mod.nil && inferred_return_type != return_type
           node.raise "expected fun to return #{return_type} but it returned #{inferred_return_type}"
         end
 
@@ -331,6 +339,8 @@ module Crystal
           unless node.expanded
             @attributes = nil
           end
+        when MacroExpression, MacroIf, MacroFor
+          # Don't clear attributes that were generating with macros
         else
           @attributes = nil
         end
@@ -440,6 +450,8 @@ module Crystal
 
     def lookup_type(base_type, names, node, lookup_in_container = true)
       base_type.lookup_type names, lookup_in_container: lookup_in_container
+    rescue ex : Crystal::Exception
+      raise ex
     rescue ex
       node.raise ex.message
     end
@@ -529,6 +541,8 @@ module Crystal
         end
         return false unless macro_scope.is_a?(Type)
 
+        macro_scope = macro_scope.remove_alias
+
         the_macro = macro_scope.metaclass.lookup_macro(node.name, node.args, node.named_args)
       when Nil
         return false if node.name == "super" || node.name == "previous_def"
@@ -566,17 +580,24 @@ module Crystal
       true
     end
 
-    def expand_macro(the_macro, node)
+    def expand_macro(the_macro, node, mode = nil)
       begin
         expanded_macro = yield
       rescue ex : Crystal::Exception
         node.raise "expanding macro", ex
       end
 
+      mode ||= if @lib_def_pass > 0
+                 MacroExpansionMode::Lib
+               else
+                 MacroExpansionMode::Normal
+               end
+
       generated_nodes = @mod.parse_macro_source(expanded_macro, the_macro, node, Set.new(@vars.keys),
         inside_def: !!@typed_def,
         inside_type: !current_type.is_a?(Program),
         inside_exp: @exp_nest > 0,
+        mode: mode,
       )
 
       if node_doc = node.doc
@@ -618,36 +639,39 @@ module Crystal
 
     def visit(node : MacroExpression)
       expand_inline_macro node
+      false
     end
 
     def visit(node : MacroIf)
       expand_inline_macro node
+      false
     end
 
     def visit(node : MacroFor)
       expand_inline_macro node
+      false
     end
 
-    def expand_inline_macro(node)
+    def expand_inline_macro(node, mode = nil)
       if expanded = node.expanded
         begin
           expanded.accept self
         rescue ex : Crystal::Exception
           node.raise "expanding macro", ex
         end
-        return false
+        return expanded
       end
 
       the_macro = Macro.new("macro_#{node.object_id}", [] of Arg, node).at(node.location)
 
-      generated_nodes = expand_macro(the_macro, node) do
+      generated_nodes = expand_macro(the_macro, node, mode: mode) do
         @mod.expand_macro node, (@scope || current_type), @type_lookup, @free_vars
       end
 
       node.expanded = generated_nodes
       node.bind_to generated_nodes
 
-      false
+      generated_nodes
     end
 
     def check_valid_attributes(node, valid_attributes, desc)
@@ -695,7 +719,7 @@ module Crystal
         node.raise msg
       end
 
-      if type.is_a?(TypeDefType) && type.typedef.fun?
+      if type.is_a?(TypeDefType) && type.typedef.proc?
         type = type.typedef
       end
 
@@ -725,49 +749,73 @@ module Crystal
 
     def interpret_enum_value(node : Call, target_type = nil)
       obj = node.obj
-      unless obj
-        node.raise "invalid constant value"
-      end
-
-      case node.args.size
-      when 0
-        left = interpret_enum_value(obj, target_type)
-
-        case node.name
-        when "+" then +left
-        when "-"
-          case left
-          when Int8  then -left
-          when Int16 then -left
-          when Int32 then -left
-          when Int64 then -left
-          else
-            node.raise "invalid constant value"
-          end
-        when "~" then ~left
-        else
-          node.raise "invalid constant value"
+      if obj
+        if obj.is_a?(Path)
+          value = interpret_enum_value_call_macro?(node, target_type)
+          return value if value
         end
-      when 1
-        left = interpret_enum_value(obj, target_type)
-        right = interpret_enum_value(node.args.first, target_type)
 
-        case node.name
-        when "+"  then left + right
-        when "-"  then left - right
-        when "*"  then left * right
-        when "/"  then left / right
-        when "&"  then left & right
-        when "|"  then left | right
-        when "<<" then left << right
-        when ">>" then left >> right
-        when "%"  then left % right
+        case node.args.size
+        when 0
+          left = interpret_enum_value(obj, target_type)
+
+          case node.name
+          when "+" then +left
+          when "-"
+            case left
+            when Int8  then -left
+            when Int16 then -left
+            when Int32 then -left
+            when Int64 then -left
+            else
+              interpret_enum_value_call_macro(node, target_type)
+            end
+          when "~" then ~left
+          else
+            interpret_enum_value_call_macro(node, target_type)
+          end
+        when 1
+          left = interpret_enum_value(obj, target_type)
+          right = interpret_enum_value(node.args.first, target_type)
+
+          case node.name
+          when "+"  then left + right
+          when "-"  then left - right
+          when "*"  then left * right
+          when "/"  then left / right
+          when "&"  then left & right
+          when "|"  then left | right
+          when "<<" then left << right
+          when ">>" then left >> right
+          when "%"  then left % right
+          else
+            interpret_enum_value_call_macro(node, target_type)
+          end
         else
           node.raise "invalid constant value"
         end
       else
-        node.raise "invalid constant value"
+        interpret_enum_value_call_macro(node, target_type)
       end
+    end
+
+    def interpret_enum_value_call_macro(node : Call, target_type = nil)
+      interpret_enum_value_call_macro?(node, target_type) ||
+        node.raise("invalid constant value")
+    end
+
+    def interpret_enum_value_call_macro?(node : Call, target_type = nil)
+      if node.global
+        node.scope = @mod
+      else
+        node.scope = @scope || current_type.metaclass
+      end
+
+      if expand_macro(node, raise_on_missing_const: false, first_pass: true)
+        return interpret_enum_value(node.expanded.not_nil!, target_type)
+      end
+
+      nil
     end
 
     def interpret_enum_value(node : Path, target_type = nil)
@@ -775,6 +823,14 @@ module Crystal
       case type
       when Const
         interpret_enum_value(type.value, target_type)
+      else
+        node.raise "invalid constant value"
+      end
+    end
+
+    def interpret_enum_value(node : Expressions, target_type = nil)
+      if node.expressions.size == 1
+        interpret_enum_value(node.expressions.first)
       else
         node.raise "invalid constant value"
       end
@@ -822,26 +878,14 @@ module Crystal
       call_convention
     end
 
-    def check_declare_var_type(node)
-      type = node.declared_type.type.instance_type
-
-      if type.is_a?(GenericClassType)
-        node.raise "can't declare variable of generic non-instantiated type #{type}"
-      end
-
-      Crystal.check_type_allowed_in_generics(node, type, "can't use #{type} as a Proc argument type")
-
-      type
-    end
-
-    def check_declare_var_type(node, declared_type)
+    def check_declare_var_type(node, declared_type, variable_kind)
       type = declared_type.instance_type
 
       if type.is_a?(GenericClassType)
         node.raise "can't declare variable of generic non-instantiated type #{type}"
       end
 
-      Crystal.check_type_allowed_in_generics(node, type, "can't use #{type} as a Proc argument type")
+      Crystal.check_type_allowed_in_generics(node, type, "can't use #{type} as the type of #{variable_kind}")
 
       declared_type
     end
@@ -856,20 +900,12 @@ module Crystal
         node.raise "can't use class variables in generic types"
       end
 
-      if scope.is_a?(VirtualType)
-        node.raise "can't access class variable from a type that is #{scope.base_type.instance_type} or any of its subclasses"
-      end
-
-      if scope.is_a?(VirtualMetaclassType)
-        node.raise "can't access class variable from a type that is #{scope.base_type.instance_type} or any of its subclasses"
-      end
-
       scope.as(ClassVarContainer)
     end
 
     def lookup_class_var(node)
       class_var_owner = class_var_owner(node)
-      var = class_var_owner.class_vars[node.name]?
+      var = class_var_owner.lookup_class_var?(node.name)
       unless var
         undefined_class_variable(node, class_var_owner)
       end

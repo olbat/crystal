@@ -8,20 +8,20 @@ module Spec::DSL
   end
 
   def it(description, file = __FILE__, line = __LINE__, &block)
-    return if Spec.aborted?
     return unless Spec.matches?(description, file, line)
 
     Spec.formatters.each(&.before_example(description))
 
+    start = Time.now
     begin
       Spec.run_before_each_hooks
       block.call
-      Spec::RootContext.report(:success, description, file, line)
+      Spec::RootContext.report(:success, description, file, line, Time.now - start)
     rescue ex : Spec::AssertionFailed
-      Spec::RootContext.report(:fail, description, file, line, ex)
+      Spec::RootContext.report(:fail, description, file, line, Time.now - start, ex)
       Spec.abort! if Spec.fail_fast?
     rescue ex
-      Spec::RootContext.report(:error, description, file, line, ex)
+      Spec::RootContext.report(:error, description, file, line, Time.now - start, ex)
       Spec.abort! if Spec.fail_fast?
     ensure
       Spec.run_after_each_hooks
@@ -29,7 +29,6 @@ module Spec::DSL
   end
 
   def pending(description, file = __FILE__, line = __LINE__, &block)
-    return if Spec.aborted?
     return unless Spec.matches?(description, file, line)
 
     Spec.formatters.each(&.before_example(description))

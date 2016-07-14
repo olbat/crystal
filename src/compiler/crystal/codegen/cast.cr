@@ -206,16 +206,16 @@ class Crystal::CodeGenVisitor
     store value, target_pointer
   end
 
-  def assign_distinct(target_pointer, target_type : NilableFunType, value_type : NilType, value)
+  def assign_distinct(target_pointer, target_type : NilableProcType, value_type : NilType, value)
     nilable_fun = make_nilable_fun target_type
     store nilable_fun, target_pointer
   end
 
-  def assign_distinct(target_pointer, target_type : NilableFunType, value_type : FunInstanceType, value)
+  def assign_distinct(target_pointer, target_type : NilableProcType, value_type : ProcInstanceType, value)
     store value, target_pointer
   end
 
-  def assign_distinct(target_pointer, target_type : NilableFunType, value_type : TypeDefType, value)
+  def assign_distinct(target_pointer, target_type : NilableProcType, value_type : TypeDefType, value)
     assign_distinct target_pointer, target_type, value_type.typedef, value
   end
 
@@ -244,13 +244,18 @@ class Crystal::CodeGenVisitor
   end
 
   def assign_distinct(target_pointer, target_type : NamedTupleInstanceType, value_type : NamedTupleInstanceType, value)
-    value_type.names_and_types.each_with_index do |name_and_type, index|
+    value_type.entries.each_with_index do |entry, index|
       value_ptr = aggregate_index(value, index)
-      value_at_index = to_lhs(value_ptr, name_and_type[1])
-      target_index = target_type.name_index(name_and_type[0]).not_nil!
-      target_index_type = target_type.name_type(name_and_type[0])
-      assign aggregate_index(target_pointer, target_index), target_index_type, name_and_type[1], value_at_index
+      value_at_index = to_lhs(value_ptr, entry.type)
+      target_index = target_type.name_index(entry.name).not_nil!
+      target_index_type = target_type.name_type(entry.name)
+      assign aggregate_index(target_pointer, target_index), target_index_type, entry.type, value_at_index
     end
+  end
+
+  def assign_distinct(target_pointer, target_type : ProcInstanceType, value_type : ProcInstanceType, value)
+    # Cast of a non-void proc to a void proc
+    store to_rhs(value, target_type), target_pointer
   end
 
   def assign_distinct(target_pointer, target_type : Type, value_type : Type, value)
@@ -308,16 +313,21 @@ class Crystal::CodeGenVisitor
     value
   end
 
-  def downcast_distinct(value, to_type : FunInstanceType, from_type : NilableFunType)
+  def downcast_distinct(value, to_type : ProcInstanceType, from_type : NilableProcType)
     value
   end
 
-  def downcast_distinct(value, to_type : TypeDefType, from_type : NilableFunType)
+  def downcast_distinct(value, to_type : TypeDefType, from_type : NilableProcType)
     downcast_distinct value, to_type.typedef, from_type
   end
 
   def downcast_distinct(value, to_type : PointerInstanceType, from_type : NilablePointerType)
     value
+  end
+
+  def downcast_distinct(value, to_type : PointerInstanceType, from_type : PointerInstanceType)
+    # cast of a pointer being cast to Void*
+    bit_cast value, LLVM::VoidPointer
   end
 
   def downcast_distinct(value, to_type : TypeDefType, from_type : NilablePointerType)
@@ -373,7 +383,7 @@ class Crystal::CodeGenVisitor
     to_lhs value, to_type
   end
 
-  def downcast_distinct(value, to_type : FunInstanceType, from_type : FunInstanceType)
+  def downcast_distinct(value, to_type : ProcInstanceType, from_type : ProcInstanceType)
     # Nothing to do
     value
   end
@@ -416,15 +426,15 @@ class Crystal::CodeGenVisitor
     cast_to value, to_type
   end
 
-  def upcast_distinct(value, to_type : NilableFunType, from_type : NilType)
+  def upcast_distinct(value, to_type : NilableProcType, from_type : NilType)
     make_nilable_fun to_type
   end
 
-  def upcast_distinct(value, to_type : NilableFunType, from_type : FunInstanceType)
+  def upcast_distinct(value, to_type : NilableProcType, from_type : ProcInstanceType)
     value
   end
 
-  def upcast_distinct(value, to_type : NilableFunType, from_type : TypeDefType)
+  def upcast_distinct(value, to_type : NilableProcType, from_type : TypeDefType)
     upcast_distinct value, to_type, from_type.typedef
   end
 

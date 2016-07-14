@@ -47,7 +47,8 @@ class Crystal::Playground::TestAgent < Playground::Agent
   end
 end
 
-fun a_sample_void : Void
+def a_sample_void
+  Pointer(Void).malloc(1_u64).value
 end
 
 describe Playground::Agent do
@@ -57,14 +58,7 @@ describe Playground::Agent do
     agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"5","value_type":"Int32"}))
     x, y = 3, 4
     agent.i(1, ["x", "y"]) { {x, y} }.should eq({3, 4})
-    agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"{3, 4}","value_type":"{Int32, Int32}","data":{"x":"3","y":"4"}}))
-
-    agent.i(1) { nil.as(Void?) }
-    agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"nil","value_type":"Void?"}))
-    agent.i(1) { a_sample_void.as(Void?) }
-    agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"(void)","value_type":"Void?"}))
-    agent.i(1) { a_sample_void }
-    agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"(void)","value_type":"Void"}))
+    agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"{3, 4}","value_type":"Tuple(Int32, Int32)","data":{"x":"3","y":"4"}}))
   end
 end
 

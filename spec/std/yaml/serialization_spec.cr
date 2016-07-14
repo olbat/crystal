@@ -62,12 +62,11 @@ describe "YAML serialization" do
       Tuple(Int32, String, Bool).from_yaml("---\n- 1\n- foo\n- true\n").should eq({1, "foo", true})
     end
 
-    # TODO: uncomment after 0.16.0
-    # it "does for named tuple" do
-    #   tuple = NamedTuple(x: Int32, y: String).from_yaml(%({"y": "hello", "x": 1}))
-    #   tuple.should eq({x: 1, y: "hello"})
-    #   tuple.should be_a(NamedTuple(x: Int32, y: String))
-    # end
+    it "does for named tuple" do
+      tuple = NamedTuple(x: Int32, y: String).from_yaml(%({"y": "hello", "x": 1}))
+      tuple.should eq({x: 1, y: "hello"})
+      tuple.should be_a(NamedTuple(x: Int32, y: String))
+    end
 
     it "does for BigInt" do
       big = BigInt.from_yaml("123456789123456789123456789123456789123456789")
@@ -104,6 +103,10 @@ describe "YAML serialization" do
           Time::Format.new("%F").from_yaml(pull).should eq(Time.new(2014, 1, 2))
         end
       end
+    end
+
+    it "deserializes union" do
+      Array(Int32 | String).from_yaml(%([1, "hello"])).should eq([1, "hello"])
     end
   end
 
@@ -171,10 +174,9 @@ describe "YAML serialization" do
       BigFloat.from_yaml(big.to_yaml).should eq(big)
     end
 
-    # TODO: uncomment after 0.15.0
-    # it "does for Enum" do
-    #   YAMLSpecEnum.from_yaml(YAMLSpecEnum::One.to_yaml).should eq(YAMLSpecEnum::One)
-    # end
+    it "does for Enum" do
+      YAMLSpecEnum.from_yaml(YAMLSpecEnum::One.to_yaml).should eq(YAMLSpecEnum::One)
+    end
 
     it "does a full document" do
       data = {

@@ -278,28 +278,6 @@ describe "Type inference: macro" do
       )) { types["Bar"] }
   end
 
-  it "doesn't die on untyped instance var" do
-    assert_type(%(
-      require "prelude"
-
-      class Foo
-        def initialize
-          @foo = 1
-        end
-
-        def foo
-          @foo
-        end
-
-        macro def ivars_size : Int32
-          {{@type.instance_vars.size}}
-        end
-      end
-
-      ->(x : Foo) { x.foo; x.ivars_size }
-      )) { fun_of(types["Foo"], no_return) }
-  end
-
   it "errors if non-existent named arg" do
     assert_error %(
       macro foo(x = 1)
@@ -589,7 +567,7 @@ describe "Type inference: macro" do
       while true
         test
       end
-      )) { |mod| mod.nil }
+      )) { nil_type }
   end
 
   it "can access variable inside macro expansion (#2057)" do
@@ -666,7 +644,7 @@ describe "Type inference: macro" do
       end
 
       class Foo
-        macro def method(x : Problem) : Int32
+        def method(x : Problem) : Int32
           {% for ivar in @type.instance_vars %}
             @{{ivar.id}}.method(x)
           {% end %}
@@ -891,5 +869,33 @@ describe "Type inference: macro" do
       foo 10, 20, y: 30
       ),
       "no overload matches"
+  end
+
+  it "finds macro through alias (#2706)" do
+    assert_type(%(
+      module Moo
+        macro bar
+          1
+        end
+      end
+
+      alias Foo = Moo
+
+      Foo.bar
+      )) { int32 }
+  end
+
+  it "can override macro (#2773)" do
+    assert_type(%(
+      macro foo
+        1
+      end
+
+      macro foo
+        'a'
+      end
+
+      foo
+      )) { char }
   end
 end

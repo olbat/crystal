@@ -29,7 +29,7 @@ describe "Type inference: class var" do
 
       Foo.x
       ),
-      "class variable '@@x' of Foo must be Int32, not Nil"
+      "class variable '@@x' of Foo is not nilable (it's Int32) so it must have an initializer"
   end
   it "types class var" do
     assert_type("
@@ -72,7 +72,7 @@ describe "Type inference: class var" do
       ") { int32 }
   end
 
-  it "types class var inside fun literal inside class" do
+  it "types class var inside proc literal inside class" do
     assert_type("
       class Foo
         @@foo = 1
@@ -332,5 +332,172 @@ describe "Type inference: class var" do
       end
       ),
       "can't use Class as the type of class variable @@class of Foo, use a more specific type"
+  end
+
+  it "gives correct error when trying to use Int as a class variable type" do
+    assert_error %(
+      class Foo
+        @@x : Int
+      end
+      ),
+      "can't use Int as the type of a class variable yet, use a more specific type"
+  end
+
+  it "can find class var in subclass" do
+    assert_type(%(
+      class Foo
+        @@var = 1
+      end
+
+      class Bar < Foo
+        def self.var
+          @@var
+        end
+      end
+
+      Bar.var
+      )) { int32 }
+  end
+
+  it "can find class var through included module" do
+    assert_type(%(
+      module Moo
+        @@var = 1
+      end
+
+      class Bar
+        include Moo
+
+        def self.var
+          @@var
+        end
+      end
+
+      Bar.var
+      )) { int32 }
+  end
+
+  it "errors if redefining class var type in subclass" do
+    assert_error %(
+      class Foo
+        @@x : Int32
+      end
+
+      class Bar < Foo
+        @@x : Float64
+      end
+      ),
+      "class variable '@@x' of Bar is already defined as Int32 in Foo"
+  end
+
+  it "errors if redefining class var type in subclass, with guess" do
+    assert_error %(
+      class Foo
+        @@x = 1
+      end
+
+      class Bar < Foo
+        @@x = 'a'
+      end
+      ),
+      "class variable '@@x' of Bar is already defined as Int32 in Foo"
+  end
+
+  it "errors if redefining class var type in included module" do
+    assert_error %(
+      module Moo
+        @@x : Int32
+      end
+
+      class Bar
+        include Moo
+
+        @@x : Float64
+      end
+      ),
+      "class variable '@@x' of Bar is already defined as Int32 in Moo"
+  end
+
+  it "declares uninitialized (#2935)" do
+    assert_type(%(
+      class Foo
+        @@x = uninitialized Int32
+
+        def self.x
+          @@x
+        end
+      end
+
+      Foo.x
+      )) { int32 }
+  end
+
+  it "doesn't error if accessing class variable before defined (#2941)" do
+    assert_type(%(
+      class Bar
+        @@x : Baz = Foo.x
+
+        def self.x
+          @@x
+        end
+      end
+
+      class Foo
+        @@x = Baz.new
+
+        def self.x
+          @@x
+        end
+      end
+
+      class Baz
+        def y
+          1
+        end
+      end
+
+      Bar.x.y
+      )) { int32 }
+  end
+
+  it "doesn't error on recursive depdendency if var is nilable (#2943)" do
+    assert_type(%(
+      class Foo
+        @@foo : Int32?
+        @@foo = Foo.bar
+
+        def self.bar
+          @@foo
+        end
+
+        def self.foo
+          @@foo
+        end
+      end
+
+      Foo.foo
+      )) { nilable int32 }
+  end
+
+  it "types as nilable if doesn't have initializer" do
+    assert_type(%(
+      class Foo
+        def self.x
+          @@x = 1
+          @@x
+        end
+      end
+
+      Foo.x
+      )) { nilable int32 }
+  end
+
+  it "errors if class variable not nilable without initializer" do
+    assert_error %(
+      class Foo
+        @@foo : Int32
+      end
+      ),
+      "class variable '@@foo' of Foo is not nilable (it's Int32) so it must have an initializer"
   end
 end

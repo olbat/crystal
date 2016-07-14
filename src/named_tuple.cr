@@ -34,9 +34,49 @@ struct NamedTuple
   #
   # {}                         # syntax error
   # ```
-  # def self.new(**options)
-  #   options
+  def self.new(**options : **T)
+    options
+  end
+
+  # Creates a named tuple from the given hash, with elements casted to the given types. See `#from`.
+  #
+  # ```
+  # NamedTuple(foo: String, bar: Int64).from({:foo => "world", :bar => 2})       # => {foo: "world", bar: 2}
+  # NamedTuple(foo: String, bar: Int64).from({"foo" => "world", "bar" => 2})     # => {foo: "world", bar: 2}
+  # NamedTuple(foo: String, bar: Int64).from({:foo => "world", :bar => 2}).class # => {foo: String, bar: Int64}
+  # ```
+  def self.from(hash : Hash)
+    {% begin %}
+    NamedTuple.new(**{{T}}).from(hash)
+    {% end %}
+  end
+
+  # Expects to be called on a named tuple whose values are types, creates a tuple from the given hash,
+  # with types casted appropriately. The hash keys must be either symbols or strings.
+  #
+  # This allows you to easily pass a hash as individual named arguments to a method.
+  #
+  # ```
+  # def speak_about(thing : String, n : Int64)
+  #   "I see #{n} #{thing}s"
   # end
+  #
+  # data = JSON.parse(%({"thing": "world", "n": 2})).as_h
+  # speak_about(**{thing: String, n: Int64}.from(data)) # => "I see 2 worlds"
+  # ```
+  def from(hash : Hash)
+    if size != hash.size
+      raise ArgumentError.new("Expected a hash with #{size} keys but one with #{hash.size} keys was given.")
+    end
+
+    {% begin %}
+      NamedTuple.new(
+      {% for key, value in T %}
+        {{key.stringify}}: self[{{key.symbolize}}].cast(hash.fetch({{key.symbolize}}) { hash["{{key}}"] }),
+      {% end %}
+      )
+    {% end %}
+  end
 
   # Returns the value for the given *key*, if there's such key, otherwise raises `KeyError`.
   #
@@ -168,7 +208,12 @@ struct NamedTuple
       {% if i > 0 %}
         io << ", "
       {% end %}
-      io << {{key.stringify}}
+      key = {{key.stringify}}
+      if Symbol.needs_quotes?(key)
+        key.inspect(io)
+      else
+        io << key
+      end
       io << ": "
       self[{{key.symbolize}}].inspect(io)
     {% end %}
@@ -367,17 +412,12 @@ struct NamedTuple
     {% end %}
   end
 
-  # Returns *self*.
-  def dup
-    self
-  end
-
   # Returns a named tuple with the same keys but with cloned values, using the `clone` method.
   def clone
     {% begin %}
       {
         {% for key in T %}
-          {{key}}: self[{{key.symbolize}}].clone,
+          {{key.stringify}}: self[{{key.symbolize}}].clone,
         {% end %}
       }
     {% end %}

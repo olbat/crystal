@@ -15,7 +15,7 @@ require "c/unistd"
 # these two methods:
 #
 # * `read(slice : Slice(UInt8))`: read at most *slice.size* bytes into *slice* and return the number of bytes read
-# * `write(slice : Slice(UInt8))`: write at most *slice.size* bytes from *slice* and return the number of bytes written
+# * `write(slice : Slice(UInt8))`: write the whole *slice* into the IO
 #
 # For example, this is a simple IO on top of a `Slice(UInt8)`:
 #
@@ -112,9 +112,9 @@ module IO
     end
     nfds += 1
 
-    read_fdset = FdSet.from_ios(read_ios)
-    write_fdset = FdSet.from_ios(write_ios)
-    error_fdset = FdSet.from_ios(error_ios)
+    read_fdset = FDSet.from_ios(read_ios)
+    write_fdset = FDSet.from_ios(write_ios)
+    error_fdset = FDSet.from_ios(error_ios)
 
     if timeout_sec
       sec = LibC::TimeT.new(timeout_sec)
@@ -146,13 +146,13 @@ module IO
     else
       ios = [] of IO
       read_ios.try &.each do |io|
-        ios << io if read_fdset.is_set(io)
+        ios << io if read_fdset.set?(io)
       end
       write_ios.try &.each do |io|
-        ios << io if write_fdset.is_set(io)
+        ios << io if write_fdset.set?(io)
       end
       error_ios.try &.each do |io|
-        ios << io if error_fdset.is_set(io)
+        ios << io if error_fdset.set?(io)
       end
       ios
     end
@@ -392,22 +392,22 @@ module IO
     return nil unless first
 
     first = first.to_u32
-    return first.chr, 1 if first < 0x80
+    return first.unsafe_chr, 1 if first < 0x80
 
     second = read_utf8_masked_byte
-    return ((first & 0x1f) << 6 | second).chr, 2 if first < 0xe0
+    return ((first & 0x1f) << 6 | second).unsafe_chr, 2 if first < 0xe0
 
     third = read_utf8_masked_byte
-    return ((first & 0x0f) << 12 | (second << 6) | third).chr, 3 if first < 0xf0
+    return ((first & 0x0f) << 12 | (second << 6) | third).unsafe_chr, 3 if first < 0xf0
 
     fourth = read_utf8_masked_byte
-    return ((first & 0x07) << 18 | (second << 12) | (third << 6) | fourth).chr, 4 if first < 0xf8
+    return ((first & 0x07) << 18 | (second << 12) | (third << 6) | fourth).unsafe_chr, 4 if first < 0xf8
 
-    raise InvalidByteSequenceError.new
+    raise InvalidByteSequenceError.new("Unexpected byte 0x#{first.to_s(16)} in UTF-8 byte sequence")
   end
 
   private def read_utf8_masked_byte
-    byte = read_utf8_byte || raise "Incomplete UTF-8 byte sequence"
+    byte = read_utf8_byte || raise InvalidByteSequenceError.new("Incomplete UTF-8 byte sequence")
     (byte & 0x3f).to_u32
   end
 
@@ -628,7 +628,7 @@ module IO
 
     # One byte: use gets(Char)
     if delimiter.bytesize == 1
-      return gets(delimiter.unsafe_byte_at(0).chr)
+      return gets(delimiter.unsafe_byte_at(0).unsafe_chr)
     end
 
     # One char: use gets(Char)
@@ -657,8 +657,8 @@ module IO
   end
 
   # Same as `gets`, but raises `EOFError` if called at the end of this IO.
-  def read_line(*args) : String?
-    gets(*args) || raise EOFError.new
+  def read_line(*args, **options) : String?
+    gets(*args, **options) || raise EOFError.new
   end
 
   # Reads and discards *bytes_count* bytes.
@@ -690,8 +690,10 @@ module IO
   end
 
   # Writes the given object to this IO using the specified *format*.
-  # This ends up invoking `object.to_io(self, format)`, so any object defining
-  # a `to_io` method can be written in this way.
+  #
+  # This ends up invoking `object.to_io(self, format)`, so any object defining a
+  # `to_io(io : IO, format : IO::ByteFormat = IO::ByteFormat::SystemEndian)`
+  # method can be written in this way.
   #
   # See `Int#to_io` and `Float#to_io`.
   #
@@ -706,7 +708,9 @@ module IO
   end
 
   # Reads an instance of the given *type* from this IO using the specified *format*.
-  # This ends up invoking `type.to_io(self, forma)`, so any type defining a `to_io`
+  #
+  # This ends up invoking `type.from_io(self, format)`, so any type defining a
+  # `from_io(io : IO, format : IO::ByteFormat = IO::ByteFormat::SystemEndian)`
   # method can be read in this way.
   #
   # See `Int#from_io` and `Float#from_io`.
@@ -750,8 +754,8 @@ module IO
   # olleh
   # dlrow
   # ```
-  def each_line(*args)
-    while line = gets(*args)
+  def each_line(*args, **options)
+    while line = gets(*args, **options)
       yield line
     end
   end
@@ -766,8 +770,8 @@ module IO
   # iter.next # => "hello\n"
   # iter.next # => "world"
   # ```
-  def each_line(*args)
-    LineIterator.new(self, args)
+  def each_line(*args, **options)
+    LineIterator.new(self, args, **options)
   end
 
   # Inovkes the given block with each `Char` in this IO.
@@ -890,6 +894,28 @@ module IO
       count += len
     end
     len < 0 ? len : count
+  end
+
+  # Copy at most *limit* bytes from *src* to *dst*.
+  #
+  # ```
+  # io = MemoryIO.new "hello"
+  # io2 = MemoryIO.new
+  #
+  # IO.copy io, io2, 3
+  #
+  # io2.to_s # => "hel"
+  # ```
+  def self.copy(src, dst, limit : Int)
+    raise ArgumentError.new("negative limit") if limit < 0
+
+    buffer = uninitialized UInt8[1024]
+    remaining = limit
+    while (len = src.read(buffer.to_slice[0, Math.min(buffer.size, Math.max(remaining, 0))])) > 0
+      dst.write buffer.to_slice[0, len]
+      remaining -= len
+    end
+    limit - remaining
   end
 
   # :nodoc:

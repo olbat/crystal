@@ -4,15 +4,21 @@ require "../types"
 
 module Crystal
   class Program
+    getter? in_cleanup_phase = false
+
     def cleanup(node)
       transformer = CleanupTransformer.new(self)
+      @in_cleanup_phase = true
       node = transformer.transform_loop(node)
+      @in_cleanup_phase = false
       puts node if ENV["AFTER"]? == "1"
       node
     end
 
     def cleanup_types
       transformer = CleanupTransformer.new(self)
+
+      @in_cleanup_phase = true
       after_inference_types.each do |type|
         cleanup_type type, transformer
       end
@@ -22,6 +28,8 @@ module Crystal
           initializer.node = transformer.transform_loop(initializer.node)
         end
       end
+
+      @in_cleanup_phase = false
     end
 
     def cleanup_type(type, transformer)
@@ -58,8 +66,6 @@ module Crystal
   # idea on how to generate code for unreachable branches, because they have no type,
   # and for now the codegen only deals with typed nodes.
   class CleanupTransformer < Transformer
-    @const_being_initialized : Path?
-
     def initialize(@program : Program)
       @transformed = Set(UInt64).new
       @def_nest_count = 0
@@ -203,11 +209,7 @@ module Crystal
 
       if target.is_a?(Path)
         const = target.target_const.not_nil!
-        if const.used
-          @const_being_initialized = target
-        else
-          return node
-        end
+        return node unless const.used
       end
 
       node.value = node.value.transform self
@@ -220,7 +222,6 @@ module Crystal
         const = const.not_nil!
         const.initialized = true
         const.value = const.value.transform self
-        @const_being_initialized = nil
       end
 
       if target.is_a?(Global)
@@ -242,32 +243,9 @@ module Crystal
       node
     end
 
-    def transform(node : Path)
-      if target_const = node.target_const
-        if target_const.used && !target_const.initialized?
-          value = target_const.value
-          if (const_node = @const_being_initialized) && !simple_constant?(value)
-            const_being_initialized = const_node.target_const.not_nil!
-            const_node.raise "constant #{const_being_initialized} requires initialization of #{target_const}, \
-                                        which is initialized later. Initialize #{target_const} before #{const_being_initialized}"
-          end
-        end
-      end
-
-      super
-    end
-
     def transform(node : Global)
-      if const_node = @const_being_initialized
-        const_being_initialized = const_node.target_const.not_nil!
-
-        if !@program.initialized_global_vars.includes?(node.name)
-          global_var = @program.global_vars[node.name]
-          if global_var.type?.try { |t| !t.includes_type?(@program.nil) }
-            const_node.raise "constant #{const_being_initialized} requires initialization of #{node}, \
-                                        which is initialized later. Initialize #{node} before #{const_being_initialized}"
-          end
-        end
+      if expanded = node.expanded
+        return expanded
       end
 
       node
@@ -315,7 +293,10 @@ module Crystal
       obj_type = obj.try &.type?
       block = node.block
 
-      if !node.type? && obj && obj_type && obj_type.module?
+      # It might happen that a call was made on a module or an abstract class
+      # and we don't know the type because there are no including classes or subclasses.
+      # In that case, turn this into an untyped expression.
+      if !node.type? && obj && obj_type && (obj_type.module? || obj_type.abstract?)
         return untyped_expression(node, "`#{node}` has no type")
       end
 
@@ -323,23 +304,14 @@ module Crystal
         block.fun_literal = fun_literal.transform(self)
       end
 
-      # Check if we have an untyped expression in this call, or an expression
-      # whose type was never allocated. Replace it with raise.
+      # Check if we have an untyped expression in this call. Replace it with raise.
       if (obj && !obj_type)
         return untyped_expression(node, "`#{obj}` has no type")
-      end
-
-      if obj && !obj.type.allocated?
-        return untyped_expression(node, "#{obj.type} in `#{obj}` was never instantiated")
       end
 
       node.args.each do |arg|
         unless arg.type?
           return untyped_expression(node, "`#{arg}` has no type")
-        end
-
-        unless arg.type.allocated?
-          return untyped_expression(node, "#{arg.type} in `#{arg}` was never instantiated")
         end
       end
 
@@ -369,7 +341,6 @@ module Crystal
 
       if target_defs = node.target_defs
         changed = false
-        allocated_defs = [] of Def
 
         if target_defs.size == 1
           if target_defs[0].is_a?(External)
@@ -382,43 +353,29 @@ module Crystal
         end
 
         target_defs.each do |target_def|
-          allocated = target_def.owner.allocated? && target_def.args.all? &.type.allocated?
-          if allocated
-            allocated_defs << target_def
+          unless @transformed.includes?(target_def.object_id)
+            @transformed.add(target_def.object_id)
 
-            unless @transformed.includes?(target_def.object_id)
-              @transformed.add(target_def.object_id)
+            node.bubbling_exception do
+              old_body = target_def.body
+              old_type = target_def.body.type?
 
-              node.bubbling_exception do
-                old_body = target_def.body
-                old_type = target_def.body.type?
+              @def_nest_count += 1
+              target_def.body = target_def.body.transform(self)
+              @def_nest_count -= 1
 
-                @def_nest_count += 1
-                target_def.body = target_def.body.transform(self)
-                @def_nest_count -= 1
+              new_type = target_def.body.type?
 
-                new_type = target_def.body.type?
-
-                # It can happen that the body of the function changed, and as
-                # a result the type changed. In that case we need to rebind the
-                # def to the new body, unbinding it from the previous one.
-                if new_type != old_type
-                  @changed = true
-                  target_def.unbind_from old_body
-                  target_def.bind_to target_def.body
-                end
+              # It can happen that the body of the function changed, and as
+              # a result the type changed. In that case we need to rebind the
+              # def to the new body, unbinding it from the previous one.
+              if new_type != old_type
+                @changed = true
+                target_def.unbind_from old_body
+                target_def.bind_to target_def.body
               end
             end
-          else
-            changed = true
           end
-        end
-
-        if changed
-          @changed = true
-          node.unbind_from node.target_defs
-          node.target_defs = allocated_defs
-          node.bind_to allocated_defs
         end
 
         if node.target_defs.not_nil!.empty?
@@ -485,7 +442,7 @@ module Crystal
     def check_args_are_not_closure(node, message)
       node.args.each do |arg|
         case arg
-        when FunLiteral
+        when ProcLiteral
           if arg.def.closure
             vars = ClosuredVarsCollector.collect arg.def
             unless vars.empty?
@@ -494,7 +451,7 @@ module Crystal
 
             arg.raise message
           end
-        when FunPointer
+        when ProcPointer
           if arg.obj.try &.type?.try &.passed_as_self?
             arg.raise "#{message} (closured vars: self)"
           end
@@ -507,7 +464,7 @@ module Crystal
       end
     end
 
-    def transform(node : FunPointer)
+    def transform(node : ProcPointer)
       super
 
       if call = node.call?
@@ -523,7 +480,7 @@ module Crystal
       node
     end
 
-    def transform(node : FunLiteral)
+    def transform(node : ProcLiteral)
       body = node.def.body
       if node.def.no_returns? && !body.type?
         node.def.body = untyped_expression(body)
@@ -776,10 +733,6 @@ module Crystal
         unless resulting_type
           node.raise "can't cast #{obj_type} to #{to_type}"
         end
-
-        unless to_type.allocated?
-          return build_raise "can't cast to #{to_type} because it was never instantiated"
-        end
       end
 
       node
@@ -795,6 +748,20 @@ module Crystal
 
       if obj_type.no_return?
         rebind_type node, @program.no_return
+        return node
+      end
+
+      # If there's no way to cast obj to the given type,
+      # just return `obj; nil`
+      resulting_type = obj_type.filter_by(to_type)
+      unless resulting_type
+        nil_literal = NilLiteral.new
+        nil_literal.set_type(@program.nil)
+        exps = Expressions.new([node.obj, nil_literal] of ASTNode)
+        exps.set_type(@program.nil)
+        @changed = true
+        rebind_node(node, @program.nil_var)
+        return exps
       end
 
       node
@@ -819,27 +786,6 @@ module Crystal
         node.else = nil
       end
 
-      if node_rescues = node.rescues
-        new_rescues = [] of Rescue
-
-        node_rescues.each do |a_rescue|
-          if !a_rescue.type? || a_rescue.type.allocated?
-            new_rescues << a_rescue
-          end
-        end
-
-        if new_rescues.empty?
-          if node.ensure
-            node.rescues = nil
-          else
-            rebind_node node, node.body
-            return node.body
-          end
-        else
-          node.rescues = new_rescues
-        end
-      end
-
       node
     end
 
@@ -851,6 +797,10 @@ module Crystal
         unless instance_type.class?
           node.exp.raise "#{instance_type} is not a class, it's a #{instance_type.type_desc}"
         end
+      end
+
+      if expanded = node.expanded
+        return expanded
       end
 
       node

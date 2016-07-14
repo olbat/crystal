@@ -7,14 +7,14 @@ class Crystal::Command
 
     Command:
         init                     generate a new project
-        build                    compile program
+        build                    build an executable
         deps                     install project dependencies
         docs                     generate documentation
         env                      print Crystal environment information
         eval                     eval code from args or standard input
         play                     starts crystal playground server
-        run (default)            compile and run program
-        spec                     compile and run specs (in spec directory)
+        run (default)            build and run program
+        spec                     build and run specs (in spec directory)
         tool                     run a tool
         help, --help, -h         show this help
         version, --version, -v   show version
@@ -52,7 +52,10 @@ class Crystal::Command
       when "init".starts_with?(command)
         options.shift
         init
-      when "build".starts_with?(command)
+      when "build".starts_with?(command), "compile".starts_with?(command)
+        if "compile".starts_with?(command)
+          STDERR.puts "Deprecation: The compile command was renamed to build and will be removed in a future version."
+        end
         options.shift
         build
       when "play".starts_with?(command)
@@ -96,6 +99,8 @@ class Crystal::Command
       puts USAGE
       exit
     end
+  rescue ex : Crystal::ToolException
+    error ex.message
   rescue ex : Crystal::Exception
     ex.color = @color
     if @config.try(&.output_format) == "json"
@@ -171,9 +176,9 @@ class Crystal::Command
     end
 
     vars = {
-      "CRYSTAL_CACHE_DIR": CacheDir.instance.dir,
-      "CRYSTAL_PATH":      CrystalPath.default_path,
-      "CRYSTAL_VERSION":   Config.version || "",
+      "CRYSTAL_CACHE_DIR" => CacheDir.instance.dir,
+      "CRYSTAL_PATH"      => CrystalPath.default_path,
+      "CRYSTAL_VERSION"   => Config.version || "",
     }
 
     if ARGV.empty?
@@ -317,8 +322,8 @@ class Crystal::Command
         options << "-l" << locations.first[1]
       end
     else
-      locations.each do |loc|
-        options << "--location" << "#{loc[0]}:#{loc[1]}"
+      locations.each do |(file, line)|
+        options << "--location" << "#{file}:#{line}"
       end
     end
 
@@ -387,7 +392,7 @@ class Crystal::Command
 
       opts.on("-h", "--help", "Show this message") do
         puts opts
-        exit 1
+        exit
       end
 
       opts.unknown_args do |before, after|
@@ -411,10 +416,9 @@ class Crystal::Command
   private def execute(output_filename, run_args)
     begin
       Process.run(output_filename, args: run_args, input: true, output: true, error: true) do |process|
-        Signal::INT.trap do
-          process.kill
-          exit
-        end
+        # Ignore the signal so we don't exit the running process
+        # (the running process can still handle this signal)
+        Signal::INT.ignore # do
       end
       status = $?
     ensure
@@ -429,6 +433,8 @@ class Crystal::Command
         STDERR.puts "Program was killed"
       when Signal::SEGV
         STDERR.puts "Program exited because of a segmentation fault (11)"
+      when Signal::INT
+        # OK, bubbled from the sub-program
       else
         STDERR.puts "Program received and didn't handle signal #{status.exit_signal} (#{status.exit_signal.value})"
       end
@@ -479,8 +485,8 @@ class Crystal::Command
 
       unless no_codegen
         unless run
-          opts.on("--cross-compile flags", "cross-compile") do |cross_compile|
-            compiler.cross_compile_flags = cross_compile
+          opts.on("--cross-compile", "cross-compile") do |cross_compile|
+            compiler.cross_compile = true
           end
         end
         opts.on("-d", "--debug", "Add symbolic debug info") do
@@ -516,7 +522,7 @@ class Crystal::Command
 
       opts.on("-h", "--help", "Show this message") do
         puts opts
-        exit 1
+        exit
       end
 
       unless no_codegen

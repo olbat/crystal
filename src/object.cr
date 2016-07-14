@@ -153,19 +153,14 @@ class Object
 
   # Returns a shallow copy of this object.
   #
-  # Object returns self, but subclasses override this method to provide
-  # specific dup behaviour.
-  def dup
-    self
-  end
-
-  # Returns a deep copy of this object.
+  # As a convention, `clone` is the method used to create a deep copy of
+  # an object, but this logic isn't defined generically for every type
+  # because cycles could be involved, and the clone logic might not need
+  # to clone everything.
   #
-  # Object returns self, but subclasses override this method to provide
-  # specific clone behaviour.
-  def clone
-    self
-  end
+  # Many types in the standard library, like `Array`, `Hash`, `Set` and
+  # `Deque`, and all primitive types, define `dup` and `clone`.
+  abstract def dup
 
   # Defines getter methods for each of the given arguments.
   #
@@ -912,21 +907,19 @@ class Object
     {% end %}
   end
 
-  # Delegate *method* to *to_object*.
-  #
-  # Syntax is: delegate method1, [method2, ..., ], to_object
+  # Delegate *methods* to *to*.
   #
   # Note that due to current language limitations this is only useful
-  # when no blocks are involved.
+  # when no captured blocks are involved.
   #
   # ```
   # class StringWrapper
   #   def initialize(@string)
   #   end
   #
-  #   delegate downcase, @string
-  #   delegate gsub, @string
-  #   delegate empty?, capitalize, @string
+  #   delegate downcase, to: @string
+  #   delegate gsub, to: @string
+  #   delegate empty?, capitalize, to: @string
   # end
   #
   # wrapper = StringWrapper.new "HELLO"
@@ -935,25 +928,17 @@ class Object
   # wrapper.empty?         # => false
   # wrapper.capitalize     # => "Hello"
   # ```
-  macro delegate(method, required, *others)
-    {% if others.empty? %}
-      def {{method.id}}(*args)
-        {{required.id}}.{{method.id}}(*args)
-      end
-    {% else %}
-      def {{method.id}}(*args)
-        {{others[-1].id}}.{{method.id}}(*args)
+  macro delegate(*methods, to object)
+    {% for method in methods %}
+      def {{method.id}}(*args, **options)
+        {{object.id}}.{{method.id}}(*args, **options)
       end
 
-      def {{required.id}}(*args)
-        {{others[-1].id}}.{{required.id}}(*args)
-      end
-
-      {% for i in 0...others.size - 1 %}
-        def {{others[i].id}}(*args)
-          {{others[-1].id}}.{{others[i].id}}(*args)
+      def {{method.id}}(*args, **options)
+        {{object.id}}.{{method.id}}(*args, **options) do |*yield_args|
+          yield *yield_args
         end
-      {% end %}
+      end
     {% end %}
   end
 
@@ -1024,6 +1009,7 @@ class Object
   end
 
   # Forwards missing methods to delegate.
+  #
   # ```
   # class StringWrapper
   #   def initialize(@string)
@@ -1037,8 +1023,26 @@ class Object
   # wrapper.gsub(/E/, "A") # => "HALLO"
   # ```
   macro forward_missing_to(delegate)
-    macro method_missing(name, args, block)
-      {{delegate}}.\{{name.id}}(\{{*args}}) \{{block}}
+    macro method_missing(call)
+      {{delegate}}.\{{call}}
+    end
+  end
+
+  # Defines a `clone` method that returns a copy of this
+  # object with all instance variables cloned (`clone` is
+  # in turn invoked on them).
+  macro def_clone
+    # Returns a copy of `self` with all instance variables cloned.
+    def clone
+      clone = \{{@type}}.allocate
+      clone.initialize_copy(self)
+      clone
+    end
+
+    protected def initialize_copy(other)
+      \{% for ivar in @type.instance_vars %}
+        @\{{ivar.id}} = other.@\{{ivar.id}}.clone
+      \{% end %}
     end
   end
 end

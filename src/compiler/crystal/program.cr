@@ -1,5 +1,4 @@
 require "llvm"
-require "dl"
 require "./types"
 
 module Crystal
@@ -41,10 +40,6 @@ module Crystal
     # as the program starts, before the main code.
     getter! class_var_and_const_initializers
 
-    # The list of class vars and const being typed, to check
-    # a recursive dependency.
-    getter! class_var_and_const_being_typed
-
     getter! argc : Const
     getter! argv : Const
 
@@ -65,7 +60,6 @@ module Crystal
       @after_inference_types = Set(Type).new
       @string_pool = StringPool.new
       @class_var_and_const_initializers = [] of ClassVarInitializer | Const
-      @class_var_and_const_being_typed = [] of MetaTypeVar | Const
       @tempfiles = [] of String
 
       types = @types = {} of String => Type
@@ -121,11 +115,9 @@ module Crystal
       types["StaticArray"] = static_array = @static_array = StaticArrayType.new self, self, "StaticArray", value, ["T", "N"]
       static_array.struct = true
       static_array.declare_instance_var("@buffer", Path.new("T"))
-      static_array.allocated = true
       static_array.allowed_in_generics = false
 
       types["String"] = string = @string = NonGenericClassType.new self, self, "String", reference
-      string.allocated = true
 
       string.declare_instance_var("@bytesize", @int32)
       string.declare_instance_var("@length", @int32)
@@ -134,7 +126,6 @@ module Crystal
       types["Class"] = klass = @class = MetaclassType.new(self, object, value, "Class")
       object.metaclass = klass
       klass.metaclass = klass
-      klass.allocated = true
       klass.allowed_in_generics = false
 
       types["Struct"] = struct_t = @struct_t = NonGenericClassType.new self, self, "Struct", value
@@ -155,12 +146,11 @@ module Crystal
       enum_t.struct = true
       enum_t.allowed_in_generics = false
 
-      types["Proc"] = proc = @proc = FunType.new self, self, "Proc", value, ["T"]
-      proc.variadic = true
-      proc.allowed_in_generics = false
+      types["Proc"] = @proc = ProcType.new self, self, "Proc", value, ["T", "R"]
+
+      types["Union"] = @union = GenericUnionType.new self, self, "Union", value, ["T"]
 
       types["Crystal"] = crystal_module = NonGenericModuleType.new self, self, "Crystal"
-      crystal_module.locations << Location.new(__LINE__ - 1, 0, __FILE__)
 
       argc_primitive = Primitive.new(:argc)
       argc_primitive.type = int32
@@ -194,9 +184,8 @@ module Crystal
 
     private def define_crystal_constants
       types["Crystal"] = @crystal = crystal = NonGenericModuleType.new self, self, "Crystal"
-      crystal.locations << Location.new(__LINE__ - 1, 0, __FILE__)
 
-      tag, sha = Crystal::Config.tag_and_sha
+      version, sha = Crystal::Config.version_and_sha
 
       if sha
         define_crystal_string_constant "BUILD_COMMIT", sha
@@ -209,7 +198,7 @@ module Crystal
       define_crystal_string_constant "DEFAULT_PATH", Crystal::Config.path
       define_crystal_string_constant "DESCRIPTION", Crystal::Config.description
       define_crystal_string_constant "PATH", Crystal::CrystalPath.default_path
-      define_crystal_string_constant "VERSION", tag
+      define_crystal_string_constant "VERSION", version
     end
 
     private def define_crystal_string_constant(name, value)
@@ -222,7 +211,6 @@ module Crystal
 
     private def define_crystal_constant(name, value)
       crystal.types[name] = const = Const.new self, crystal, name, value
-      const.locations << Location.new(0, 0, __FILE__)
       const.initialized = true
     end
 
@@ -312,12 +300,17 @@ module Crystal
     end
 
     def named_tuple_of(hash : Hash(String, Type))
-      names_and_types = hash.map { |k, v| {k, v.as(Type)} }
-      named_tuple_of(names_and_types)
+      entries = hash.map { |k, v| NamedArgumentType.new(k, v.as(Type)) }
+      named_tuple_of(entries)
     end
 
-    def named_tuple_of(names_and_types : Array)
-      named_tuple.instantiate_named_args(names_and_types)
+    def named_tuple_of(hash : NamedTuple)
+      entries = hash.map { |k, v| NamedArgumentType.new(k.to_s, v.as(Type)) }
+      named_tuple_of(entries)
+    end
+
+    def named_tuple_of(entries : Array(NamedArgumentType))
+      named_tuple.instantiate_named_args(entries)
     end
 
     def nilable(type)
@@ -359,8 +352,8 @@ module Crystal
             return NilableType.new(self, other_type)
           else
             untyped_type = other_type.remove_typedef
-            if untyped_type.fun?
-              return NilableFunType.new(self, other_type)
+            if untyped_type.proc?
+              return NilableProcType.new(self, other_type)
             elsif untyped_type.is_a?(PointerInstanceType)
               return NilablePointerType.new(self, other_type)
             end
@@ -393,16 +386,20 @@ module Crystal
       MixedUnionType.new(self, types)
     end
 
-    def fun_of(types : Array)
+    def proc_of(types : Array)
       type_vars = types.map { |type| type.as(TypeVar) }
+      unless type_vars.empty?
+        type_vars[-1] = self.nil if type_vars[-1].is_a?(VoidType)
+      end
       proc.instantiate(type_vars)
     end
 
-    def fun_of(nodes : Array(ASTNode), return_type : Type)
+    def proc_of(nodes : Array(ASTNode), return_type : Type)
       type_vars = Array(TypeVar).new(nodes.size + 1)
       nodes.each do |node|
         type_vars << node.type
       end
+      return_type = self.nil if return_type.void?
       type_vars << return_type
       proc.instantiate(type_vars)
     end
@@ -420,26 +417,17 @@ module Crystal
       crystal_path.find filename, relative_to
     end
 
-    def load_libs
-      if has_flag?("darwin")
-        ext = "dylib"
-      else
-        ext = "so"
-      end
-      link_attributes.each do |attr|
-        if libname = attr.lib
-          DL.dlopen "lib#{libname}.#{ext}"
-        end
-      end
-    end
-
     {% for name in %w(object no_return value number reference void nil bool char int int8 int16 int32 int64
                      uint8 uint16 uint32 uint64 float float32 float64 string symbol pointer array static_array
-                     exception tuple named_tuple proc enum range regex crystal) %}
+                     exception tuple named_tuple proc union enum range regex crystal) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end
     {% end %}
+
+    def nil_type
+      @nil.not_nil!
+    end
 
     def hash_type
       @hash_type.not_nil!
@@ -507,7 +495,6 @@ module Crystal
     private def abstract_value_type(type)
       type.abstract = true
       type.struct = true
-      type.allocated = true
       type.allowed_in_generics = false
     end
 

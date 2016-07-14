@@ -30,7 +30,7 @@ describe "Type inference: tuples" do
   end
 
   it "types tuple [2]?" do
-    assert_type("{1, 'a'}[2]?") { |mod| mod.nil }
+    assert_type("{1, 'a'}[2]?") { nil_type }
   end
 
   it "types tuple metaclass [0]" do
@@ -43,7 +43,7 @@ describe "Type inference: tuples" do
 
   it "gives error when indexing out of range" do
     assert_error "{1, 'a'}[2]",
-      "index out of bounds for tuple {Int32, Char} (2 not in 0..1)"
+      "index out of bounds for Tuple(Int32, Char) (2 not in 0..1)"
   end
 
   it "gives error when indexing out of range on empty tuple" do
@@ -190,5 +190,63 @@ describe "Type inference: tuples" do
       a << {Bar.new, Bar.new}
       a[0]
       )) { tuple_of [types["Foo"].virtual_type!, types["Foo"].virtual_type!] }
+  end
+
+  it "can iterate T" do
+    assert_type(%(
+      struct Tuple
+        def self.types
+          {% begin %}
+            {
+              {% for type in T %}
+                {{type}},
+              {% end %}
+            }
+          {% end %}
+        end
+      end
+      Tuple(Int32, String).types
+      )) { tuple_of([int32.metaclass, string.metaclass]) }
+  end
+
+  it "can call [] on T" do
+    assert_type(%(
+      struct Tuple
+        def self.types
+          {{ T[0] }}
+        end
+      end
+      Tuple(Nil, Int32).types
+      )) { nil_type.metaclass }
+  end
+
+  it "matches tuple with splat (#2932)" do
+    assert_type(%(
+      def foo(x : Tuple(*T))
+        T
+      end
+
+      foo({1, 'a'})
+      )) { tuple_of([int32, char]).metaclass }
+  end
+
+  it "matches tuple with splat (2) (#2932)" do
+    assert_type(%(
+      def foo(x : Tuple(A, *B, C))
+        {A, B, C}
+      end
+
+      foo({1, 'a', true, 1.5})
+      )) { tuple_of([int32.metaclass, tuple_of([char, bool]).metaclass, float64.metaclass]) }
+  end
+
+  it "errors if using two splat indices on restriction" do
+    assert_error %(
+      def foo(x : Tuple(*A, *B))
+      end
+
+      foo({1, 'a'})
+      ),
+      "can't specify more than one splat in restriction"
   end
 end

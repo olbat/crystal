@@ -88,8 +88,8 @@ class Crystal::CodeGenVisitor
         end
 
         if is_closure
-          # In the case of a closure fun literal (-> { ... }), the closure_ptr is not
-          # the one of the parent context, it's the last parameter of this fun literal.
+          # In the case of a closure proc literal (-> { ... }), the closure_ptr is not
+          # the one of the parent context, it's the last parameter of this proc literal.
           closure_parent_context = old_context.clone
           closure_parent_context.closure_ptr = fun_literal_closure_ptr
           context.closure_parent_context = closure_parent_context
@@ -173,7 +173,7 @@ class Crystal::CodeGenVisitor
       end
       llvm_arg_type
     end
-    llvm_return_type = llvm_type(target_def.type)
+    llvm_return_type = llvm_return_type(target_def.type)
 
     if is_closure
       llvm_args_types.insert(0, LLVM::VoidPointer)

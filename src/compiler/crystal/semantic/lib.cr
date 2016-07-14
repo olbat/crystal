@@ -87,8 +87,8 @@ class Crystal::Call
     # (and we checked that all args are covered), and we
     # remove our named args.
     sorted_named_args.sort_by! &.[0]
-    sorted_named_args.each do |tuple|
-      self.args << tuple[1].value
+    sorted_named_args.each do |(index, named_arg)|
+      self.args << named_arg.value
     end
     self.named_args = nil
   end
@@ -186,7 +186,7 @@ class Crystal::Call
     actual_type = self_arg.type
     actual_type = mod.pointer_of(actual_type) if self_arg.is_a?(Out)
     return if actual_type.compatible_with?(expected_type)
-    return if actual_type.is_implicitly_converted_in_c_to?(expected_type)
+    return if actual_type.implicitly_converted_in_c_to?(expected_type)
 
     unaliased_type = expected_type.remove_alias
     case unaliased_type
@@ -200,10 +200,10 @@ class Crystal::Call
       if Conversions.to_unsafe_lookup_failed?(ex)
         arg_name = lib_arg_name(typed_def_arg, index)
 
-        if expected_type.is_a?(FunInstanceType) &&
-           actual_type.is_a?(FunInstanceType) &&
+        if expected_type.is_a?(ProcInstanceType) &&
+           actual_type.is_a?(ProcInstanceType) &&
            expected_type.arg_types == actual_type.arg_types
-          self_arg.raise "argument #{arg_name} of '#{full_name(obj_type)}' must be a function returning #{expected_type.return_type}, not #{actual_type.return_type}"
+          self_arg.raise "argument #{arg_name} of '#{full_name(obj_type)}' must be a Proc returning #{expected_type.return_type}, not #{actual_type.return_type}"
         else
           self_arg.raise "argument #{arg_name} of '#{full_name(obj_type)}' must be #{expected_type}, not #{actual_type}"
         end
@@ -214,7 +214,7 @@ class Crystal::Call
 
     implicit_call_type = implicit_call.type?
     if implicit_call_type
-      if implicit_call_type.compatible_with?(expected_type)
+      if implicit_call_type.compatible_with?(expected_type) || implicit_call_type.implicitly_converted_in_c_to?(expected_type)
         self.args[index] = implicit_call
       else
         arg_name = lib_arg_name(typed_def_arg, index)

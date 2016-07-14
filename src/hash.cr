@@ -2,6 +2,8 @@
 #
 # See the [official docs](http://crystal-lang.org/docs/syntax_and_semantics/literals/hash.html) for the basics.
 class Hash(K, V)
+  include Enumerable({K, V})
+
   getter size : Int32
   @buckets_size : Int32
   @first : Entry(K, V)?
@@ -263,15 +265,20 @@ class Hash(K, V)
   #
   # ```
   # h = {"foo" => "bar"}
+  #
   # h.each do |key, value|
   #   key   # => "foo"
   #   value # => "bar"
+  # end
+  #
+  # h.each do |key_and_value|
+  #   key_and_value # => {"foo", "bar"}
   # end
   # ```
   def each
     current = @first
     while current
-      yield current.key, current.value
+      yield({current.key, current.value})
       current = current.fore
     end
     self
@@ -358,44 +365,6 @@ class Hash(K, V)
     ValueIterator(K, V).new(self, @first)
   end
 
-  # Calls the given block for each key-value pair and passes in the key, value, and index.
-  #
-  # ```
-  # h = {"foo" => "bar"}
-  #
-  # h.each_with_index do |key, value, index|
-  #   key   # => "foo"
-  #   value # => "bar"
-  #   index # => 0
-  # end
-  #
-  # h.each_with_index(3) do |key, value, index|
-  #   key   # => "foo"
-  #   value # => "bar"
-  #   index # => 3
-  # end
-  # ```
-  def each_with_index(offset = 0)
-    i = offset
-    each do |key, value|
-      yield key, value, i
-      i += 1
-    end
-    self
-  end
-
-  # Iterates the given block for each element with an arbitrary object given, and returns the initially given object.
-  # ```
-  # evens = (1..10).each_with_object([] of Int32) { |i, a| a << i*2 }
-  # # => [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
-  # ```
-  def each_with_object(memo)
-    each do |k, v|
-      yield(memo, k, v)
-    end
-    memo
-  end
-
   # Returns a new `Array` with all the keys.
   #
   # ```
@@ -404,7 +373,7 @@ class Hash(K, V)
   # ```
   def keys
     keys = Array(K).new(@size)
-    each { |key| keys << key }
+    each_key { |key| keys << key }
     keys
   end
 
@@ -416,7 +385,7 @@ class Hash(K, V)
   # ```
   def values
     values = Array(V).new(@size)
-    each { |key, value| values << value }
+    each_value { |value| values << value }
     values
   end
 
@@ -443,24 +412,13 @@ class Hash(K, V)
   # h.key_index("qux") # => nil
   # ```
   def key_index(key)
-    each_with_index do |my_key, my_value, i|
+    # TODO: use each_with_index
+    i = 0
+    each do |my_key, my_value|
       return i if key == my_key
+      i += 1
     end
     nil
-  end
-
-  # Returns an `Array` populated with the results of each iteration in the given block.
-  #
-  # ```
-  # h = {"foo" => "bar", "baz" => "qux"}
-  # h.map { |k, v| v } # => ["bar", "qux"]
-  # ```
-  def map(&block : K, V -> U)
-    array = Array(U).new(@size)
-    each do |k, v|
-      array.push yield k, v
-    end
-    array
   end
 
   # Returns a new `Hash` with the keys and values of this hash and *other* combined.
@@ -534,7 +492,7 @@ class Hash(K, V)
   # h.reject { |k, v| v < 200 } # => {"b" => 200, "c" => 300}
   # ```
   def reject(&block : K, V -> U)
-    each_with_object({} of K => V) do |memo, k, v|
+    each_with_object({} of K => V) do |(k, v), memo|
       memo[k] = v unless yield k, v
     end
   end
@@ -615,12 +573,6 @@ class Hash(K, V)
       hash[key] = ary2[i]
     end
     hash
-  end
-
-  # Returns a `Tuple` of the first key-value pair in the hash.
-  def first
-    first = @first.not_nil!
-    {first.key, first.value}
   end
 
   # Returns the first key in the hash.
@@ -872,34 +824,6 @@ class Hash(K, V)
   # Returns *true* if a `Hash` has any key-value pair.
   def any?
     !empty?
-  end
-
-  # Yields all key-value pairs to the given block with a initial value *memo*,
-  # which is replaced with each returned value in iteration.
-  # Returns the last value of *memo*.
-  #
-  # ```
-  # prices = {
-  #   "apple":  5,
-  #   "lemon":  3,
-  #   "papaya": 6,
-  #   "orange": 4,
-  # }
-  #
-  # prices.reduce("apple") do |highest, item, price|
-  #   if price > prices[highest]
-  #     item
-  #   else
-  #     highest
-  #   end
-  # end
-  # # => "papaya"
-  # ```
-  def reduce(memo)
-    each do |k, v|
-      memo = yield(memo, k, v)
-    end
-    memo
   end
 
   protected def find_entry(key)

@@ -6,6 +6,7 @@ module Crystal
     def visit_type_declarations(node)
       processor = TypeDeclarationProcessor.new(self)
       processor.process(node)
+      {node, processor}
     end
   end
 
@@ -31,11 +32,11 @@ module Crystal
       super(mod)
 
       # The type of global variables. The last one wins.
-      @globals = {} of String => Type
+      @globals = {} of String => TypeDeclarationWithLocation
 
       # The type of class variables. The last one wins.
       # This is type => variables.
-      @class_vars = {} of ClassVarContainer => Hash(String, Type)
+      @class_vars = {} of ClassVarContainer => Hash(String, TypeDeclarationWithLocation)
     end
 
     def visit(node : ClassDef)
@@ -108,9 +109,9 @@ module Crystal
       when InstanceVar
         declare_instance_var(node, var)
       when ClassVar
-        declare_class_var(node, var)
+        declare_class_var(node, var, false)
       when Global
-        declare_global_var(node, var)
+        declare_global_var(node, var, false)
       end
 
       false
@@ -147,31 +148,31 @@ module Crystal
     def declare_instance_var_on_non_generic(owner, node, var)
       # For non-generic types we can solve the type now
       var_type = lookup_type(node.declared_type)
-      var_type = check_declare_var_type(node, var_type)
+      var_type = check_declare_var_type(node, var_type, "an instance variable")
       owner_vars = @instance_vars[owner] ||= {} of String => TypeDeclarationWithLocation
-      type_decl = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!)
+      type_decl = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!, false)
       owner_vars[var.name] = type_decl
     end
 
     def declare_instance_var_on_generic(owner, node, var)
       # For generic types we must delay the type resolution
       owner_vars = @instance_vars[owner] ||= {} of String => TypeDeclarationWithLocation
-      type_decl = TypeDeclarationWithLocation.new(node.declared_type, node.location.not_nil!)
+      type_decl = TypeDeclarationWithLocation.new(node.declared_type, node.location.not_nil!, false)
       owner_vars[var.name] = type_decl
     end
 
-    def declare_class_var(node, var)
+    def declare_class_var(node, var, uninitialized)
       owner = class_var_owner(node)
-      var_type = lookup_type(node.declared_type).virtual_type
-      var_type = check_declare_var_type(node, var_type)
-      owner_vars = @class_vars[owner] ||= {} of String => Type
-      owner_vars[var.name] = var_type
+      var_type = lookup_type(node.declared_type)
+      var_type = check_declare_var_type(node, var_type, "a class variable")
+      owner_vars = @class_vars[owner] ||= {} of String => TypeDeclarationWithLocation
+      owner_vars[var.name] = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!, uninitialized)
     end
 
-    def declare_global_var(node, var)
-      var_type = lookup_type(node.declared_type).virtual_type
-      var_type = check_declare_var_type(node, var_type)
-      @globals[var.name] = var_type
+    def declare_global_var(node, var, uninitialized)
+      var_type = lookup_type(node.declared_type)
+      var_type = check_declare_var_type(node, var_type, "a global variable")
+      @globals[var.name] = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!, uninitialized)
     end
 
     def visit(node : Def)
@@ -207,6 +208,13 @@ module Crystal
     end
 
     def visit(node : UninitializedVar)
+      var = node.var
+      case var
+      when ClassVar
+        declare_class_var(node, var, true)
+      when Global
+        declare_global_var(node, var, true)
+      end
       false
     end
 
@@ -214,7 +222,7 @@ module Crystal
       false
     end
 
-    def visit(node : FunLiteral)
+    def visit(node : ProcLiteral)
       false
     end
 
@@ -262,7 +270,7 @@ module Crystal
       false
     end
 
-    def visit(node : Fun)
+    def visit(node : ProcNotation)
       false
     end
 

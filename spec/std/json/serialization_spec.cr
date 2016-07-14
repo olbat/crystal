@@ -67,12 +67,11 @@ describe "JSON serialization" do
       tuple.should be_a(Tuple(Int32, String))
     end
 
-    # TODO: uncomment after 0.16.0
-    # it "does for named tuple" do
-    #   tuple = NamedTuple(x: Int32, y: String).from_json(%({"y": "hello", "x": 1}))
-    #   tuple.should eq({x: 1, y: "hello"})
-    #   tuple.should be_a(NamedTuple(x: Int32, y: String))
-    # end
+    it "does for named tuple" do
+      tuple = NamedTuple(x: Int32, y: String).from_json(%({"y": "hello", "x": 1}))
+      tuple.should eq({x: 1, y: "hello"})
+      tuple.should be_a(NamedTuple(x: Int32, y: String))
+    end
 
     it "does for BigInt" do
       big = BigInt.from_json("123456789123456789123456789123456789123456789")
@@ -111,6 +110,30 @@ describe "JSON serialization" do
     it "deserializes with root" do
       Int32.from_json(%({"foo": 1}), root: "foo").should eq(1)
       Array(Int32).from_json(%({"foo": [1, 2]}), root: "foo").should eq([1, 2])
+    end
+
+    it "deserializes union" do
+      Array(Int32 | String).from_json(%([1, "hello"])).should eq([1, "hello"])
+    end
+
+    it "deserializes union with bool (fast path)" do
+      Union(Bool, Array(Int32)).from_json(%(true)).should be_true
+    end
+
+    {% for type in %w(Int8 Int16 Int32 Int64 UInt8 UInt16 UInt32 UInt64).map(&.id) %}
+      it "deserializes union with {{type}} (fast path)" do
+        Union({{type}}, Array(Int32)).from_json(%(#{ {{type}}::MAX })).should eq({{type}}::MAX)
+      end
+    {% end %}
+
+    it "deserializes union with Float32 (fast path)" do
+      Union(Float32, Array(Int32)).from_json(%(1)).should eq(1)
+      Union(Float32, Array(Int32)).from_json(%(1.23)).should eq(1.23_f32)
+    end
+
+    it "deserializes union with Float64 (fast path)" do
+      Union(Float64, Array(Int32)).from_json(%(1)).should eq(1)
+      Union(Float64, Array(Int32)).from_json(%(1.23)).should eq(1.23)
     end
   end
 

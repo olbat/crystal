@@ -60,6 +60,20 @@ struct Int
   alias Unsigned = UInt8 | UInt16 | UInt32 | UInt64
   alias Primitive = Signed | Unsigned
 
+  # Returns a `Char` that has the unicode codepoint of *self*.
+  #
+  # Raises `ArgumentError` if this integer's value doesn't fit a char's range (`0..0x10ffff`).
+  #
+  # ```
+  # 97.chr # => 'a'
+  # ```
+  def chr
+    unless 0 <= self <= Char::MAX_CODEPOINT
+      raise ArgumentError.new("#{self} out of char range")
+    end
+    unsafe_chr
+  end
+
   def ~
     self ^ -1
   end
@@ -492,6 +506,10 @@ struct Int8
   def popcount
     Intrinsics.popcount8(self)
   end
+
+  def clone
+    self
+  end
 end
 
 struct Int16
@@ -509,6 +527,10 @@ struct Int16
 
   def popcount
     Intrinsics.popcount16(self)
+  end
+
+  def clone
+    self
   end
 end
 
@@ -528,6 +550,10 @@ struct Int32
   def popcount
     Intrinsics.popcount32(self)
   end
+
+  def clone
+    self
+  end
 end
 
 struct Int64
@@ -545,6 +571,10 @@ struct Int64
 
   def popcount
     Intrinsics.popcount64(self)
+  end
+
+  def clone
+    self
   end
 end
 
@@ -564,6 +594,10 @@ struct UInt8
   def popcount
     Intrinsics.popcount8(self)
   end
+
+  def clone
+    self
+  end
 end
 
 struct UInt16
@@ -581,6 +615,10 @@ struct UInt16
 
   def popcount
     Intrinsics.popcount16(self)
+  end
+
+  def clone
+    self
   end
 end
 
@@ -600,6 +638,10 @@ struct UInt32
   def popcount
     Intrinsics.popcount32(self)
   end
+
+  def clone
+    self
+  end
 end
 
 struct UInt64
@@ -617,5 +659,9 @@ struct UInt64
 
   def popcount
     Intrinsics.popcount64(self)
+  end
+
+  def clone
+    self
   end
 end

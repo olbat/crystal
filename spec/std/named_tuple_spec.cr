@@ -1,6 +1,60 @@
 require "spec"
 
 describe "NamedTuple" do
+  it "does new" do
+    NamedTuple.new(x: 1, y: 2).should eq({x: 1, y: 2})
+  end
+
+  it "does NamedTuple.from" do
+    t = NamedTuple(foo: Int32, bar: Int32).from({:foo => 1, :bar => 2})
+    t.should eq({foo: 1, bar: 2})
+    t.class.should eq(NamedTuple(foo: Int32, bar: Int32))
+
+    t = NamedTuple(foo: Int32, bar: Int32).from({"foo" => 1, "bar" => 2})
+    t.should eq({foo: 1, bar: 2})
+    t.class.should eq(NamedTuple(foo: Int32, bar: Int32))
+
+    t = NamedTuple("foo bar": Int32, "baz qux": Int32).from({"foo bar" => 1, "baz qux" => 2})
+    t.should eq({"foo bar": 1, "baz qux": 2})
+    t.class.should eq(NamedTuple("foo bar": Int32, "baz qux": Int32))
+
+    expect_raises ArgumentError do
+      NamedTuple(foo: Int32, bar: Int32).from({:foo => 1})
+    end
+
+    expect_raises KeyError do
+      NamedTuple(foo: Int32, bar: Int32).from({:foo => 1, :baz => 2})
+    end
+
+    # TODO: simplify regex and use TypeCastError after 0.18
+    expect_raises(Exception, /cast (?:from String )?to Int32 failed/) do
+      NamedTuple(foo: Int32, bar: Int32).from({:foo => 1, :bar => "foo"})
+    end
+  end
+
+  it "does NamedTuple#from" do
+    t = {foo: Int32, bar: Int32}.from({:foo => 1, :bar => 2})
+    t.should eq({foo: 1, bar: 2})
+    t.class.should eq(NamedTuple(foo: Int32, bar: Int32))
+
+    t = {foo: Int32, bar: Int32}.from({"foo" => 1, "bar" => 2})
+    t.should eq({foo: 1, bar: 2})
+    t.class.should eq(NamedTuple(foo: Int32, bar: Int32))
+
+    expect_raises ArgumentError do
+      {foo: Int32, bar: Int32}.from({:foo => 1})
+    end
+
+    expect_raises KeyError do
+      {foo: Int32, bar: Int32}.from({:foo => 1, :baz => 2})
+    end
+
+    # TODO: simplify regex and use TypeCastError after 0.18
+    expect_raises(Exception, /cast (?:from String )?to Int32 failed/) do
+      {foo: Int32, bar: Int32}.from({:foo => 1, :bar => "foo"})
+    end
+  end
+
   it "gets size" do
     {a: 1, b: 3}.size.should eq(2)
   end
@@ -166,36 +220,37 @@ describe "NamedTuple" do
     hash.should eq({:a => 1, :b => "hello"})
   end
 
-  # TODO: uncomment these specs after 0.16.0
+  it "does to_s" do
+    tup = {a: 1, b: "hello"}
+    tup.to_s.should eq(%({a: 1, b: "hello"}))
+  end
 
-  # it "does to_s" do
-  #   tup = {a: 1, b: "hello"}
-  #   tup.to_s.should eq(%({a: 1, b: "hello"}))
-  # end
+  it "dups" do
+    tup1 = {a: 1, b: [1, 2, 3]}
+    tup2 = tup1.dup
 
-  # it "dups" do
-  #   tup1 = {a: 1, b: [1, 2, 3]}
-  #   tup2 = tup1.dup
+    tup1[:b] << 4
+    tup2[:b].should be(tup1[:b])
+  end
 
-  #   tup1[:b] << 4
-  #   tup2[:b].should be(tup1[:b])
-  # end
+  it "clones" do
+    tup1 = {a: 1, b: [1, 2, 3]}
+    tup2 = tup1.clone
 
-  # it "clones" do
-  #   tup1 = {a: 1, b: [1, 2, 3]}
-  #   tup2 = tup1.clone
+    tup1[:b] << 4
+    tup2[:b].should eq([1, 2, 3])
 
-  #   tup1[:b] << 4
-  #   tup2[:b].should eq([1, 2, 3])
-  # end
+    tup2 = {"foo bar": 1}
+    tup2.clone.should eq(tup2)
+  end
 
-  # it "does keys" do
-  #   tup = {a: 1, b: 2}
-  #   tup.keys.should eq({:a, :b})
-  # end
+  it "does keys" do
+    tup = {a: 1, b: 2}
+    tup.keys.should eq({:a, :b})
+  end
 
-  # it "does values" do
-  #   tup = {a: 1, b: 'a'}
-  #   tup.values.should eq({1, 'a'})
-  # end
+  it "does values" do
+    tup = {a: 1, b: 'a'}
+    tup.values.should eq({1, 'a'})
+  end
 end

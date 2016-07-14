@@ -582,4 +582,47 @@ describe "Code gen: struct" do
       f.x
       )).to_i.should eq(84)
   end
+
+  it "can cast virtual struct to specific struct" do
+    run(%(
+       require "prelude"
+
+       abstract struct Foo
+       end
+
+       struct Bar < Foo
+         def foo
+           1
+         end
+       end
+
+       struct Baz < Foo
+         def foo
+           2
+         end
+       end
+
+       x = Bar.new || Baz.new
+       x.as(Bar).foo
+       )).to_i.should eq(1)
+  end
+
+  it "casts virtual struct to base type, only one subclass (#2885)" do
+    run(%(
+      abstract struct Entry
+        def initialize(@uid : String, @country : String)
+        end
+
+        def uid
+          @uid
+        end
+      end
+
+      struct MyEntry < Entry
+      end
+
+      entry = MyEntry.new("1", "GER")
+      entry.as(Entry).uid
+      )).to_string.should eq("1")
+  end
 end
