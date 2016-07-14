@@ -1,3 +1,10 @@
+crystal (0.17.4-1.1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload.
+  * Update to upstream version 0.17.4
+
+ -- Luc Sarzyniec <debian@olbat.net>  Thu, 14 Jul 2016 15:29:45 +0200
+
 crystal (0.16.0-1.1) UNRELEASED; urgency=medium
 
   * Non-maintainer upload.
