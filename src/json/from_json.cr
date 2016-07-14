@@ -1,6 +1,31 @@
+# Deserializes the given JSON in *string_or_io* into
+# an instance of `self`. This simply creates a `parser = JSON::PullParser`
+# and invokes `new(parser)`: classes that want to provide JSON
+# deserialization must provide an `def initialize(parser : JSON::PullParser`
+# method.
+#
+# ```
+# Int32.from_json("1")                # => 1
+# Array(Int32).from_json("[1, 2, 3]") # => [1, 2, 3]
+# ```
 def Object.from_json(string_or_io) : self
   parser = JSON::PullParser.new(string_or_io)
   new parser
+end
+
+# Deserializes the given JSON in *string_or_io* into
+# an instance of `self`, assuming the JSON consists
+# of an JSON object with key *root*, and whose value is
+# the value to deserialize.
+#
+# ```
+# Int32.from_json(%({"main": 1}), root: "main").should eq(1)
+# ```
+def Object.from_json(string_or_io, root : String) : self
+  parser = JSON::PullParser.new(string_or_io)
+  parser.on_key!(root) do
+    new parser
+  end
 end
 
 # Parses a String or IO denoting a JSON array, yielding
@@ -111,13 +136,44 @@ def Tuple.new(pull : JSON::PullParser)
   {% if true %}
     pull.read_begin_array
     value = Tuple.new(
-      {% for i in 0...@type.size %}
+      {% for i in 0...T.size %}
         (self[{{i}}].new(pull)),
       {% end %}
     )
     pull.read_end_array
     value
  {% end %}
+end
+
+def NamedTuple.new(pull : JSON::PullParser)
+  {% begin %}
+    {% for key in T.keys %}
+      %var{key.id} = nil
+    {% end %}
+
+    pull.read_object do |key|
+      case key
+        {% for key, type in T %}
+          when {{key.stringify}}
+            %var{key.id} = {{type}}.new(pull)
+        {% end %}
+      else
+        pull.skip
+      end
+    end
+
+    {% for key in T.keys %}
+      if %var{key.id}.nil?
+        raise JSON::ParseException.new("missing json attribute: {{key}}", 0, 0)
+      end
+    {% end %}
+
+    {
+      {% for key in T.keys %}
+        {{key}}: %var{key.id},
+      {% end %}
+    }
+  {% end %}
 end
 
 def Enum.new(pull : JSON::PullParser)

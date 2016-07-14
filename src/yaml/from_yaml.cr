@@ -81,13 +81,47 @@ def Tuple.new(pull : YAML::PullParser)
   {% if true %}
     pull.read_sequence_start
     value = Tuple.new(
-      {% for i in 0...@type.size %}
+      {% for i in 0...T.size %}
         (self[{{i}}].new(pull)),
       {% end %}
     )
     pull.read_sequence_end
     value
  {% end %}
+end
+
+def NamedTuple.new(pull : YAML::PullParser)
+  {% begin %}
+    {% for key in T.keys %}
+      %var{key.id} = nil
+    {% end %}
+
+    pull.read_mapping_start
+    while pull.kind != YAML::EventKind::MAPPING_END
+      key = pull.read_scalar
+      case key
+        {% for key, type in T %}
+          when {{key.stringify}}
+            %var{key.id} = {{type}}.new(pull)
+        {% end %}
+      else
+        pull.skip
+      end
+    end
+    pull.read_mapping_end
+
+    {% for key in T.keys %}
+      if %var{key.id}.nil?
+        raise YAML::ParseException.new("missing yaml attribute: {{key}}", 0, 0)
+      end
+    {% end %}
+
+    {
+      {% for key in T.keys %}
+        {{key}}: %var{key.id},
+      {% end %}
+    }
+  {% end %}
 end
 
 def Enum.new(pull : YAML::PullParser)

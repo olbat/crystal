@@ -1,6 +1,9 @@
 # A tuple is a fixed-size, immutable, stack-allocated sequence of values
 # of possibly different types.
 #
+# You can think of a Tuple as an immutable `Array` whose types for each position
+# are known at compile time.
+#
 # A tuple can be created with the usual `new` method or with a tuple literal:
 #
 # ```
@@ -18,7 +21,7 @@
 #
 # Indexing with an integer value that is only known at runtime will return
 # a value whose type is the union of all the types in the tuple, and might raise
-# `IndexError` .
+# `IndexError`.
 #
 # Tuples are the preferred way to return fixed-size multiple return
 # values because no memory is needed to be allocated for them:
@@ -127,7 +130,7 @@ struct Tuple
   # tuple.at(3) { 10 } # => 10
   # ```
   def at(index : Int)
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       return self[{{i}}] if {{i}} == index
     {% end %}
     yield
@@ -160,7 +163,7 @@ struct Tuple
   # 'x'
   # ```
   def each
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       yield self[{{i}}]
     {% end %}
     self
@@ -187,7 +190,7 @@ struct Tuple
   # t1 == t3 # => false
   # ```
   def ==(other : self)
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       return false unless self[{{i}}] == other[{{i}}]
     {% end %}
     true
@@ -203,6 +206,10 @@ struct Tuple
     true
   end
 
+  def ==(other)
+    false
+  end
+
   # Returns `true` if case equality holds for the elements in `self` and *other*.
   #
   # ```
@@ -212,7 +219,7 @@ struct Tuple
   #
   # See `Object#===`
   def ===(other : self)
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       return false unless self[{{i}}] === other[{{i}}]
     {% end %}
     true
@@ -258,7 +265,7 @@ struct Tuple
   #
   # See `Object#<=>`.
   def <=>(other : self)
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       cmp = self[{{i}}] <=> other[{{i}}]
       return cmp unless cmp == 0
     {% end %}
@@ -275,12 +282,12 @@ struct Tuple
     size <=> other.size
   end
 
-  # returns a hash value based on this tuple's length and contents.
+  # Returns a hash value based on this tuple's length and contents.
   #
-  # see `object#hash`.
+  # See `Object#hash`.
   def hash
     hash = 31 * size
-    {% for i in 0...@type.size %}
+    {% for i in 0...T.size %}
       hash = 31 * hash + self[{{i}}].hash
     {% end %}
     hash
@@ -295,8 +302,34 @@ struct Tuple
   def clone
     {% if true %}
       Tuple.new(
-        {% for i in 0...@type.size %}
+        {% for i in 0...T.size %}
           self[{{i}}].clone,
+        {% end %}
+      )
+    {% end %}
+  end
+
+  # Returns a tuple that contains *self*'s elements followed by *other*'s elements.
+  #
+  # ```
+  # t1 = {1, 2}
+  # t2 = {"foo", "bar"}
+  # t3 = t1 + t2
+  # t3         # => {1, 2, "foo", "bar"}
+  # typeof(t3) # => Tuple(Int32, Int32, String, String)
+  # ```
+  def +(other : Tuple)
+    plus_implementation(other)
+  end
+
+  private def plus_implementation(other : U)
+    {% begin %}
+      Tuple.new(
+        {% for i in 0...@type.size %}
+          self[{{i}}],
+        {% end %}
+        {% for i in 0...U.size %}
+          other[{{i}}],
         {% end %}
       )
     {% end %}
@@ -318,7 +351,7 @@ struct Tuple
   # {'a', 'b'}.size # => 2
   # ```
   def size
-    {{@type.size}}
+    {{T.size}}
   end
 
   # Returns a tuple containing the types of this tuple.
@@ -357,7 +390,7 @@ struct Tuple
   def map
     {% if true %}
       Tuple.new(
-        {% for i in 0...@type.size %}
+        {% for i in 0...T.size %}
           (yield self[{{i}}]),
         {% end %}
       )
@@ -373,8 +406,8 @@ struct Tuple
   def reverse
     {% if true %}
       Tuple.new(
-        {% for i in 1..@type.size %}
-          self[{{@type.size - i}}],
+        {% for i in 1..T.size %}
+          self[{{T.size - i}}],
         {% end %}
       )
     {% end %}
@@ -397,8 +430,8 @@ struct Tuple
   # 1
   # ```
   def reverse_each
-    {% for i in 1..@type.size %}
-      yield self[{{@type.size - i}}]
+    {% for i in 1..T.size %}
+      yield self[{{T.size - i}}]
     {% end %}
     self
   end
@@ -433,7 +466,7 @@ struct Tuple
   # empty.first? # => nil
   # ```
   def first?
-    {% if @type.size == 0 %}
+    {% if T.size == 0 %}
       nil
     {% else %}
       self[0]
@@ -449,7 +482,7 @@ struct Tuple
   # ```
   def last
     {% if true %}
-      self[{{@type.size - 1}}]
+      self[{{T.size - 1}}]
     {% end %}
   end
 
@@ -464,10 +497,10 @@ struct Tuple
   # empty.last? # => nil
   # ```
   def last?
-    {% if @type.size == 0 %}
+    {% if T.size == 0 %}
       nil
     {% else %}
-      self[{{@type.size - 1}}]
+      self[{{T.size - 1}}]
     {% end %}
   end
 

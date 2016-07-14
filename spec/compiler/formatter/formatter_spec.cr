@@ -75,6 +75,7 @@ describe Crystal::Formatter do
   assert_format "{ {1, 2, 3} }"
   assert_format "{ {1 => 2} }"
   assert_format "{ {1, 2, 3} => 4 }"
+  assert_format "{ {foo: 2} }"
 
   assert_format "{  } of  A   =>   B", "{} of A => B"
   assert_format "{ 1   =>   2 }", "{1 => 2}"
@@ -84,7 +85,6 @@ describe Crystal::Formatter do
   assert_format "{ foo:  1 }", "{foo: 1}"
   assert_format "{ \"foo\":  1 }", "{\"foo\": 1}"
   assert_format "{ \"foo\" =>  1 }", "{\"foo\" => 1}"
-  assert_format "HTTP::Headers { foo:  1 }", "HTTP::Headers{foo: 1}"
   assert_format "{ 1   =>   2 ,\n\n   3  =>  4 }", "{1 => 2,\n\n  3 => 4}"
   assert_format "foo({\nbar: 1,\n})", "foo({\n  bar: 1,\n})"
 
@@ -93,6 +93,8 @@ describe Crystal::Formatter do
   assert_format "Foo:: Bar", "Foo::Bar"
   assert_format "::Foo:: Bar", "::Foo::Bar"
   assert_format "Foo( A , 1 )", "Foo(A, 1)"
+  assert_format "Foo( x:  Int32  )", "Foo(x: Int32)"
+  assert_format "Foo( x:  Int32  ,  y: Float64 )", "Foo(x: Int32, y: Float64)"
 
   %w(if unless ifdef).each do |keyword|
     assert_format "#{keyword} a\n2\nend", "#{keyword} a\n  2\nend"
@@ -199,6 +201,7 @@ describe Crystal::Formatter do
   assert_format "foo  x:  1,  y:  2", "foo x: 1, y: 2"
   assert_format "foo a , b ,  x:  1", "foo a, b, x: 1"
   assert_format "foo a , *b", "foo a, *b"
+  assert_format "foo a , **b", "foo a, **b"
   assert_format "foo   &bar", "foo &bar"
   assert_format "foo 1 ,  &bar", "foo 1, &bar"
   assert_format "foo(&.bar)"
@@ -429,8 +432,14 @@ describe Crystal::Formatter do
   assert_format "@[Foo]\ndef foo\nend"
   assert_format "@[Foo(\n  1,\n)]"
 
-  assert_format "1   as   Int32", "1 as Int32"
-  assert_format "foo.bar  as   Int32", "foo.bar as Int32"
+  assert_format "1   as   Int32", "1.as(Int32)"
+  assert_format "foo.bar  as   Int32", "foo.bar.as(Int32)"
+
+  assert_format "1.as   Int32", "1.as Int32"
+  assert_format "foo.bar. as   Int32", "foo.bar.as Int32"
+
+  assert_format "1.as?   Int32", "1.as? Int32"
+  assert_format "foo.bar. as?   Int32", "foo.bar.as? Int32"
 
   assert_format "1 .. 2", "1..2"
   assert_format "1 ... 2", "1...2"
@@ -481,7 +490,7 @@ describe Crystal::Formatter do
   assert_format "macro foo\n  %foo\nend"
   assert_format "macro foo\n  %foo{x.id+2} \nend", "macro foo\n  %foo{x.id + 2}\nend"
   assert_format "macro foo\n  %foo{x,y}\nend", "macro foo\n  %foo{x, y}\nend"
-  assert_format "macro def foo : Int32\n  %foo\nend"
+  assert_format "macro def foo : Int32\n  1\nend"
   assert_format "class Foo\n  macro foo\n    1\n  end\nend"
   assert_format "   {{ 1 + 2 }}", "{{ 1 + 2 }}"
   assert_format "  {% for x in y %} 2 {% end %}", "{% for x in y %} 2 {% end %}"
@@ -729,7 +738,7 @@ describe Crystal::Formatter do
   assert_format "{1 => 2, 3 => 4}\n{5234234 => 234098234, 7 => 8}"
   assert_format "{\n    1 => 2, 3 => 4,\n  567 => 8910,\n}", "{\n  1 => 2, 3 => 4,\n  567 => 8910,\n}"
   assert_format "{\n  foo:    1,\n  b:      2,\n  barbaz: 3,\n}"
-  assert_format "{\n  a:     1,\n  foo => bar,\n}"
+  assert_format "{\n  a:   1,\n  foo: bar,\n}"
   assert_format "%(\n1\n)\n\n{\n    1 => 2,\n  234 => 5,\n}"
   assert_format "class Actor\n  macro inherited\nend\nend\n", "class Actor\n  macro inherited\n  end\nend"
   assert_format "class Actor\n  macro inherited\n\nend\nend\n", "class Actor\n  macro inherited\n  end\nend"
@@ -810,9 +819,13 @@ describe Crystal::Formatter do
 
   assert_format "@foo : Int32 # comment\n\ndef foo\nend"
 
-  assert_format "a &.b as C"
-  assert_format "a &.b.c as C"
-  assert_format "a(&.b.c as C)"
+  assert_format "a &.b as C", "a &.b.as(C)"
+  assert_format "a &.b.c as C", "a &.b.c.as(C)"
+  assert_format "a(&.b.c as C)", "a(&.b.c.as(C))"
+
+  assert_format "a &.b.as(C)"
+  assert_format "a &.b.c.as(C)"
+  assert_format "a(&.b.c.as(C))"
 
   assert_format "foo : self?"
   assert_format "foo : self? | A"
@@ -867,4 +880,33 @@ describe Crystal::Formatter do
   assert_format "foo.as(T).bar"
   assert_format "foo &.as(T)"
   assert_format "foo &.bar.as(T)"
+
+  assert_format "foo.as? ( Int32* )", "foo.as?(Int32*)"
+  assert_format "foo.as?   Int32*", "foo.as? Int32*"
+  assert_format "foo.as?(T).bar"
+  assert_format "foo &.as?(T)"
+  assert_format "foo &.bar.as?(T)"
+
+  assert_format "def foo(x, *, z)\nend"
+  assert_format "macro foo(x, *, z)\nend"
+
+  assert_format "def foo(x, *, y, **z)\nend"
+  assert_format "def foo(**z)\nend"
+  assert_format "def foo(*y, **z)\nend"
+  assert_format "def foo(**z, &block)\nend"
+  assert_format "def foo(x, **z)\nend"
+  assert_format "def foo(x, **z, &block)\nend"
+  assert_format "def foo(**z : Foo)\nend"
+
+  assert_format "def foo(x y)\nend"
+  assert_format "def foo(x @y)\nend"
+  assert_format "def foo(x @@y)\nend"
+
+  assert_format " Array( {x:  Int32,   y:  String } )", "Array({x: Int32, y: String})"
+
+  assert_format "foo { | a, ( b , c ) | a + b + c }", "foo { |a, (b, c)| a + b + c }"
+  assert_format "foo { | a, ( b , c, ), | a + b + c }", "foo { |a, (b, c)| a + b + c }"
+  assert_format "foo { | a, ( _ , c ) | a + c }", "foo { |a, (_, c)| a + c }"
+
+  assert_format "def foo\n  {{@type}}\nend"
 end

@@ -256,8 +256,18 @@ end
 struct Tuple
   def to_json(io)
     io.json_array do |array|
-      {% for i in 0...@type.size %}
+      {% for i in 0...T.size %}
         array << self[{{i}}]
+      {% end %}
+    end
+  end
+end
+
+struct NamedTuple
+  def to_json(io : IO)
+    io.json_object do |obj|
+      {% for key in T.keys %}
+        obj.field({{key.stringify}}, self[{{key.symbolize}}])
       {% end %}
     end
   end

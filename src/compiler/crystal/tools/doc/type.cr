@@ -156,7 +156,7 @@ class Crystal::Doc::Type
   end
 
   def alias_definition
-    alias_def = (@type as AliasType).aliased_type
+    alias_def = @type.as(AliasType).aliased_type
     alias_def
   end
 
@@ -520,8 +520,9 @@ class Crystal::Doc::Type
     type = @type
     if type_vars = type_vars()
       io << '('
-      type_vars.join(", ", io)
       io << '*' if type.is_a?(GenericType) && type.variadic
+      io << "**" if type.is_a?(GenericType) && type.double_variadic
+      type_vars.join(", ", io)
       io << ')'
     end
   end

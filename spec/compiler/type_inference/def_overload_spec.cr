@@ -285,9 +285,7 @@ describe "Type inference: def overload" do
       end
 
       foo 1
-    ") {
-      (types["Foo"] as GenericClassType).instantiate([int32] of TypeVar)
-    }
+    ") { generic_class "Foo", int32 }
   end
 
   it "can call overload with generic restriction" do
@@ -794,5 +792,31 @@ describe "Type inference: def overload" do
       foo 1, 2, 3
       ),
       "wrong number of arguments for 'foo' (given 3, expected 0..2)"
+  end
+
+  it "errors if no overload matches on union against named arg (#2640)" do
+    assert_error %(
+      def f(a : Int32)
+      end
+
+      a = 1 || nil
+      f(a: a)
+      ),
+      "no overload matches"
+  end
+
+  it "dispatches with named arg" do
+    assert_type(%(
+      def f(a : Int32, b : Int32)
+        true
+      end
+
+      def f(b : Int32, a : Nil)
+        'x'
+      end
+
+      a = 1 || nil
+      f(a: a, b: 2)
+      )) { union_of bool, char }
   end
 end

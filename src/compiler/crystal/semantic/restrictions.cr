@@ -95,7 +95,57 @@ module Crystal
         end
       end
 
+      # Check required named arguments
+      self_named_args = self.required_named_arguments
+      other_named_args = other.required_named_arguments
+
+      # If both have named args we must restrict name by name
+      if self_named_args && other_named_args
+        self_names = self_named_args.map(&.external_name)
+        other_names = other_named_args.map(&.external_name)
+
+        # If the names of the required named args are different, these are different overloads
+        return false if self_names != other_names
+
+        # They are the same, so we apply usual restriction checking on the args
+        self_named_args.zip(other_named_args) do |self_arg, other_arg|
+          self_restriction = self_arg.restriction
+          other_restriction = other_arg.restriction
+          return false if self_restriction == nil && other_restriction != nil
+
+          if self_restriction && other_restriction
+            return false unless self_restriction.is_restriction_of?(other_restriction, owner)
+          end
+        end
+
+        return true
+      end
+
+      # If one has required named args and the other doesn't, none is stricter than the other
+      if (self_named_args || other_named_args)
+        return false
+      end
+
+      self_double_splat_restriction = self.def.double_splat.try &.restriction
+      other_double_splat_restriction = other.def.double_splat.try &.restriction
+
+      if self_double_splat_restriction && other_double_splat_restriction
+        return false unless self_double_splat_restriction.is_restriction_of?(other_double_splat_restriction, owner)
+      elsif self_double_splat_restriction
+        true
+      elsif other_double_splat_restriction
+        false
+      end
+
       true
+    end
+
+    def required_named_arguments
+      if (splat_index = self.def.splat_index) && splat_index != self.def.args.size - 1
+        self.def.args[splat_index + 1..-1].select { |arg| !arg.default_value }.sort_by &.external_name
+      else
+        nil
+      end
     end
   end
 
@@ -190,7 +240,7 @@ module Crystal
 
     def restrict(other : Union, context)
       types = other.types.compact_map do |ident|
-        restrict(ident, context) as Type?
+        restrict(ident, context).as(Type?)
       end
       types.size > 0 ? program.type_merge_union_of(types) : nil
     end
@@ -329,7 +379,7 @@ module Crystal
 
     def restrict_type_or_fun_or_generic(other, context)
       types = union_types.compact_map do |type|
-        type.restrict(other, context) as Type?
+        type.restrict(other, context).as(Type?)
       end
       program.type_merge_union_of(types)
     end
@@ -353,7 +403,15 @@ module Crystal
       generic_class = context.type_lookup.lookup_type other.name
       return super unless generic_class == self.generic_class
 
-      generic_class = generic_class as GenericClassType
+      generic_class = generic_class.as(GenericClassType)
+
+      if other.named_args
+        unless generic_class.is_a?(NamedTupleType)
+          other.raise "can only instantiate NamedTuple with named arguments"
+        end
+        # We match named tuples in NamedTupleInstanceType
+        return nil
+      end
 
       if generic_class.type_vars.size != other.type_vars.size
         other.wrong_number_of "type vars", generic_class, other.type_vars.size, generic_class.type_vars.size
@@ -383,7 +441,19 @@ module Crystal
     end
 
     def restrict_type_var(type_var, other_type_var, context)
-      unless type_var.is_a?(NumberLiteral)
+      if type_var.is_a?(NumberLiteral)
+        case other_type_var
+        when NumberLiteral
+          if type_var == other_type_var
+            return type_var
+          end
+        when Path
+          if other_type_var.names.size == 1
+            context.set_free_var(other_type_var.names.first, type_var)
+            return type_var
+          end
+        end
+      else
         type_var = type_var.type? || type_var
       end
 
@@ -402,11 +472,17 @@ module Crystal
   end
 
   class TupleInstanceType
+    def is_restriction_of?(other : TupleInstanceType, owner)
+      return true if self == other || self.implements?(other)
+
+      false
+    end
+
     def restrict(other : Generic, context)
       generic_class = context.type_lookup.lookup_type other.name
       return super unless generic_class == self.generic_class
 
-      generic_class = generic_class as TupleType
+      generic_class = generic_class.as(TupleType)
       return nil unless other.type_vars.size == tuple_types.size
 
       tuple_types.zip(other.type_vars) do |tuple_type, type_var|
@@ -418,7 +494,46 @@ module Crystal
     end
 
     def restrict(other : TupleInstanceType, context)
-      self == other ? self : nil
+      self.implements?(other) ? self : nil
+    end
+  end
+
+  class NamedTupleInstanceType
+    def is_restriction_of?(other : NamedTupleInstanceType, owner)
+      return true if self == other || self.implements?(other)
+
+      false
+    end
+
+    def restrict(other : Generic, context)
+      generic_class = context.type_lookup.lookup_type other.name
+      return super unless generic_class == self.generic_class
+
+      other_named_args = other.named_args
+      unless other_named_args
+        other.raise "can only instantiate NamedTuple with named arguments"
+      end
+
+      # Check that the names are the same
+      other_names = other_named_args.map(&.name).sort!
+      self_names = self.names_and_types.map(&.[0]).sort!
+
+      return nil unless self_names == other_names
+
+      # Now match name by name
+      other_named_args.each do |named_arg|
+        self_type = self.name_type(named_arg.name)
+        other_type = named_arg.value
+
+        restricted = self_type.restrict(other_type, context)
+        return nil unless restricted
+      end
+
+      self
+    end
+
+    def restrict(other : NamedTupleInstanceType, context)
+      self.implements?(other) ? self : nil
     end
   end
 
@@ -431,7 +546,7 @@ module Crystal
       generic_module = context.type_lookup.lookup_type other.name
       return nil unless generic_module == @module
 
-      generic_module = generic_module as GenericModuleType
+      generic_module = generic_module.as(GenericModuleType)
       return nil unless generic_module.type_vars.size == @module.type_vars.size
 
       @module.type_vars.zip(other.type_vars) do |module_type_var, other_type_var|
@@ -473,7 +588,7 @@ module Crystal
       generic_class = context.type_lookup.lookup_type other.name
       return nil unless generic_class == @extended_class
 
-      generic_class = generic_class as GenericClassType
+      generic_class = generic_class.as(GenericClassType)
       return nil unless generic_class.type_vars.size == type_vars.size
 
       type_vars.zip(other.type_vars) do |class_type_var, other_type_var|
@@ -505,7 +620,7 @@ module Crystal
         self
       elsif other.is_a?(UnionType)
         types = other.union_types.compact_map do |t|
-          restrict(t, context) as Type?
+          restrict(t, context).as(Type?)
         end
         program.type_merge types
       elsif other.is_a?(VirtualType)
@@ -520,7 +635,7 @@ module Crystal
           self
         else
           types = base_type.subclasses.compact_map do |subclass|
-            subclass.virtual_type.restrict(other, context) as Type?
+            subclass.virtual_type.restrict(other, context).as(Type?)
           end
           program.type_merge_union_of types
         end
@@ -531,7 +646,7 @@ module Crystal
 
     def restrict(other : Generic, context)
       types = base_type.subclasses.compact_map do |subclass|
-        subclass.virtual_type.restrict(other, context) as Type?
+        subclass.virtual_type.restrict(other, context).as(Type?)
       end
       program.type_merge_union_of types
     end

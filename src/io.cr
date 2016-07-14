@@ -133,9 +133,9 @@ module IO
       timeout_ptr = Pointer(LibC::Timeval).null
     end
 
-    readfds_ptr = pointerof(read_fdset) as LibC::FdSet*
-    writefds_ptr = pointerof(write_fdset) as LibC::FdSet*
-    errorfds_ptr = pointerof(error_fdset) as LibC::FdSet*
+    readfds_ptr = pointerof(read_fdset).as(LibC::FdSet*)
+    writefds_ptr = pointerof(write_fdset).as(LibC::FdSet*)
+    errorfds_ptr = pointerof(error_fdset).as(LibC::FdSet*)
 
     ret = LibC.select(nfds, readfds_ptr, writefds_ptr, errorfds_ptr, timeout_ptr)
     case ret
@@ -461,7 +461,6 @@ module IO
   end
 
   # Writes a slice of UTF-8 encoded bytes to this IO, using the current encoding.
-  @[Raises] # TODO: there's a bug in the compiler that requires this
   def write_utf8(slice : Slice(UInt8))
     if encoder = encoder()
       encoder.write(self, slice)

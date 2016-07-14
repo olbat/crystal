@@ -90,8 +90,8 @@ module GC
   end
 
   def self.add_finalizer(object : T)
-    LibGC.register_finalizer_ignore_self(object as Void*,
-      ->(obj, data) { (obj as T).finalize },
+    LibGC.register_finalizer_ignore_self(object.as(Void*),
+      ->(obj, data) { obj.as(T).finalize },
       nil, nil, nil)
     nil
   end
@@ -101,7 +101,9 @@ module GC
     roots << Pointer(Void).new(object.object_id)
   end
 
-  record Stats, collections, bytes_found
+  record Stats,
+    collections : LibC::ULong,
+    bytes_found : LibC::Long
 
   def self.stats
     Stats.new LibGC.gc_no - 1, LibGC.bytes_found

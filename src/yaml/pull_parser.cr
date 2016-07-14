@@ -1,6 +1,6 @@
 class YAML::PullParser
   def initialize(content)
-    @parser = Pointer(Void).malloc(LibYAML::PARSER_SIZE) as LibYAML::Parser*
+    @parser = Pointer(Void).malloc(LibYAML::PARSER_SIZE).as(LibYAML::Parser*)
     @event = LibYAML::Event.new
 
     LibYAML.yaml_parser_initialize(@parser)
@@ -177,6 +177,18 @@ class YAML::PullParser
     @event.start_mark.column
   end
 
+  def problem_line_number
+    problem_mark.line
+  end
+
+  def problem_column_number
+    problem_mark.column
+  end
+
+  def problem_mark
+    @parser.as(LibYAML::InternalParser*).value.problem_mark
+  end
+
   def close
     LibYAML.yaml_parser_delete(@parser)
     LibYAML.yaml_event_delete(pointerof(@event))
@@ -191,6 +203,6 @@ class YAML::PullParser
   end
 
   private def parse_exception(msg)
-    raise ParseException.new(msg, line_number, column_number)
+    raise ParseException.new(msg, problem_line_number, problem_column_number)
   end
 end

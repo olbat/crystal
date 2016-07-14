@@ -113,13 +113,21 @@ module Crystal
         @str << " "
       end
 
+      space = false
       @str << "{"
+
       node.entries.each_with_index do |entry, i|
         @str << ", " if i > 0
+
+        space = i == 0 && entry.key.is_a?(TupleLiteral) || entry.key.is_a?(NamedTupleLiteral) || entry.key.is_a?(HashLiteral)
+        @str << " " if space
+
         entry.key.accept self
         @str << " => "
         entry.value.accept self
       end
+
+      @str << " " if space
       @str << "}"
       if of = node.of
         @str << " "
@@ -129,6 +137,18 @@ module Crystal
         @str << " => "
         of.value.accept self
       end
+      false
+    end
+
+    def visit(node : NamedTupleLiteral)
+      @str << "{"
+      node.entries.each_with_index do |entry, i|
+        @str << ", " if i > 0
+        @str << entry.key
+        @str << ": "
+        entry.value.accept self
+      end
+      @str << "}"
       false
     end
 
@@ -305,8 +325,7 @@ module Crystal
           printed_arg = false
           node.args.each_with_index do |arg, i|
             @str << ", " if printed_arg
-            arg_needs_parens = arg.is_a?(Cast)
-            in_parenthesis(arg_needs_parens) { arg.accept self }
+            arg.accept self
             printed_arg = true
           end
           if named_args = node.named_args
@@ -560,17 +579,25 @@ module Crystal
         @str << "."
       end
       @str << def_name(node.name)
-      if node.args.size > 0 || node.block_arg
+      if node.args.size > 0 || node.block_arg || node.double_splat
         @str << "("
+        printed_arg = false
         node.args.each_with_index do |arg, i|
-          @str << ", " if i > 0
+          @str << ", " if printed_arg
           @str << "*" if node.splat_index == i
           arg.accept self
+          printed_arg = true
+        end
+        if double_splat = node.double_splat
+          @str << ", " if printed_arg
+          @str << "**"
+          double_splat.accept self
         end
         if block_arg = node.block_arg
-          @str << ", " if node.args.size > 0
+          @str << ", " if printed_arg
           @str << "&"
           block_arg.accept self
+          printed_arg = true
         end
         @str << ")"
       end
@@ -592,15 +619,23 @@ module Crystal
       @str << keyword("macro")
       @str << " "
       @str << node.name.to_s
-      if node.args.size > 0 || node.block_arg
+      if node.args.size > 0 || node.block_arg || node.double_splat
         @str << "("
+        printed_arg = false
         node.args.each_with_index do |arg, i|
-          @str << ", " if i > 0
+          @str << ", " if printed_arg
           @str << "*" if i == node.splat_index
           arg.accept self
+          printed_arg = true
+        end
+        if double_splat = node.double_splat
+          @str << ", " if printed_arg
+          @str << "**"
+          double_splat.accept self
+          printed_arg = true
         end
         if block_arg = node.block_arg
-          @str << ", " if node.args.size > 0
+          @str << ", " if printed_arg
           @str << "&"
           block_arg.accept self
         end
@@ -697,6 +732,10 @@ module Crystal
     end
 
     def visit(node : Arg)
+      if node.external_name != node.name
+        @str << (node.external_name.empty? ? "_" : node.external_name)
+        @str << " "
+      end
       if node.name
         @str << decorate_arg(node, node.name)
       else
@@ -760,11 +799,26 @@ module Crystal
       end
 
       node.name.accept self
+
+      printed_arg = false
+
       @str << "("
       node.type_vars.each_with_index do |var, i|
         @str << ", " if i > 0
         var.accept self
+        printed_arg = true
       end
+
+      if named_args = node.named_args
+        named_args.each do |named_arg, i|
+          @str << ", " if printed_arg
+          @str << named_arg.name
+          @str << ": "
+          named_arg.value.accept self
+          printed_arg = true
+        end
+      end
+
       @str << ")"
       false
     end
@@ -776,6 +830,12 @@ module Crystal
 
     def visit(node : Splat)
       @str << "*"
+      node.exp.accept self
+      false
+    end
+
+    def visit(node : DoubleSplat)
+      @str << "**"
       node.exp.accept self
       false
     end
@@ -864,10 +924,15 @@ module Crystal
 
     def visit(node : TupleLiteral)
       @str << "{"
+
+      first = node.elements.first?
+      space = first.is_a?(TupleLiteral) || first.is_a?(NamedTupleLiteral) || first.is_a?(HashLiteral)
+      @str << " " if space
       node.elements.each_with_index do |exp, i|
         @str << ", " if i > 0
         exp.accept self
       end
+      @str << " " if space
       @str << "}"
       false
     end
@@ -1115,11 +1180,23 @@ module Crystal
     end
 
     def visit(node : Cast)
+      visit_cast node, "as"
+    end
+
+    def visit(node : NilableCast)
+      visit_cast node, "as?"
+    end
+
+    def visit_cast(node, keyword)
+      need_parens = need_parens(node.obj)
+      @str << "(" if need_parens
       accept_with_maybe_begin_end node.obj
-      @str << " "
-      @str << keyword("as")
-      @str << " "
+      @str << ")" if need_parens
+      @str << "."
+      @str << keyword(keyword)
+      @str << "("
       node.to.accept self
+      @str << ")"
       false
     end
 

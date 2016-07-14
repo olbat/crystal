@@ -128,7 +128,9 @@ describe "Code gen: macro" do
       end
 
       macro def foo : Int32
-        bar_{{ "baz".id }}
+        {% begin %}
+          bar_{{ "baz".id }}
+        {% end %}
       end
 
       foo
@@ -469,56 +471,6 @@ describe "Code gen: macro" do
 
       foo bar, 1, 1, 1
       )).to_i.should eq(3)
-  end
-
-  it "runs macro with arg and splat in first position (1)" do
-    run(%(
-      macro foo(*args, name)
-        {{args.size}}
-      end
-
-      foo 1, 1, 1, bar
-      )).to_i.should eq(3)
-  end
-
-  it "runs macro with arg and splat in first position (2)" do
-    run(%(
-      macro foo(*args, name)
-        {{name}}
-      end
-
-      foo 1, 1, 1, "hello"
-      )).to_string.should eq("hello")
-  end
-
-  it "runs macro with arg and splat in the middle (1)" do
-    run(%(
-      macro foo(foo, *args, name)
-        {{args.size}}
-      end
-
-      foo x, 1, 1, 1, bar
-      )).to_i.should eq(3)
-  end
-
-  it "runs macro with arg and splat in the middle (2)" do
-    run(%(
-      macro foo(foo, *args, name)
-        {{foo}}
-      end
-
-      foo "yellow", 1, 1, 1, bar
-      )).to_string.should eq("yellow")
-  end
-
-  it "runs macro with arg and splat in the middle (3)" do
-    run(%(
-      macro foo(foo, *args, name)
-        {{name}}
-      end
-
-      foo "yellow", 1, 1, 1, "cool"
-      )).to_string.should eq("cool")
   end
 
   it "expands macro that yields" do
@@ -1355,5 +1307,54 @@ describe "Code gen: macro" do
 
       foo y: "foo", x: 2
       )).to_i.should eq(6)
+  end
+
+  it "stringifies type without virtual marker" do
+    run(%(
+      class Foo
+        macro def foo_m : Int32
+          {{ @type }}.foo
+        end
+
+        def self.foo
+          1
+        end
+      end
+
+      class Bar < Foo
+        def self.foo
+          2
+        end
+      end
+
+      (Bar.new || Foo.new).foo_m
+      )).to_i.should eq(2)
+  end
+
+  it "uses tuple T in method with free vars" do
+    run(%(
+      struct Tuple
+        def foo(x : U)
+          {{T.size}}
+        end
+      end
+
+      {1, 3}.foo(1)
+      )).to_i.should eq(2)
+  end
+
+  it "implicitly marks method as macro def when using @type" do
+    run(%(
+      class Foo
+        def method
+          {{@type.stringify}}
+        end
+      end
+
+      class Bar < Foo
+      end
+
+      (Bar.new as Foo).method
+      )).to_string.should eq("Bar")
   end
 end

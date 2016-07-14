@@ -6,7 +6,6 @@ class Crystal::Doc::Generator
   def initialize(@program : Program, @included_dirs : Array(String), @dir = "./doc")
     @base_dir = `pwd`.chomp
     @types = {} of Crystal::Type => Doc::Type
-    @is_crystal_repository = false
     @repo_name = ""
     compute_repository
   end
@@ -114,10 +113,6 @@ class Crystal::Doc::Generator
   end
 
   def must_include?(a_def : Crystal::Def)
-    if @is_crystal_repository && (body = a_def.body).is_a?(Crystal::Primitive)
-      doc = Primitive.doc(a_def, body)
-      return !nodoc?(doc)
-    end
     return false if nodoc?(a_def)
 
     must_include? a_def.location
@@ -253,8 +248,6 @@ class Crystal::Doc::Generator
 
     @repository = "https://github.com/#{user}/#{repo}/blob/#{rev}"
     @repo_name = "github.com/#{user}/#{repo}"
-
-    @is_crystal_repository ||= (user == "crystal-lang" && repo == "crystal")
   end
 
   def source_link(node)
@@ -292,7 +285,7 @@ class Crystal::Doc::Generator
     filename[@base_dir.size..-1]
   end
 
-  record RelativeLocation, filename : String, url : String?
+  record RelativeLocation, filename : String, line_number : Int32, url : String?
   SRC_SEP = "src#{File::SEPARATOR}"
 
   def relative_locations(type)
@@ -310,7 +303,7 @@ class Crystal::Doc::Generator
       filename = filename[1..-1] if filename.starts_with? File::SEPARATOR
       filename = filename[4..-1] if filename.starts_with? SRC_SEP
 
-      locations << RelativeLocation.new(filename, url)
+      locations << RelativeLocation.new(filename, location.line_number, url)
     end
     locations
   end

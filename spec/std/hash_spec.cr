@@ -1,15 +1,19 @@
 require "spec"
 
-alias RecursiveHash = Hash(RecursiveHash, RecursiveHash)
+module HashSpec
+  alias RecursiveHash = Hash(RecursiveHash, RecursiveHash)
 
-class HashBreaker
-  getter x : Int32
+  class HashBreaker
+    getter x : Int32
 
-  def initialize(@x)
+    def initialize(@x)
+    end
   end
-end
 
-class NeverInstantiated
+  class NeverInstantiated
+  end
+
+  alias RecursiveType = String | Int32 | Array(RecursiveType) | Hash(Symbol, RecursiveType)
 end
 
 describe "Hash" do
@@ -268,14 +272,14 @@ describe "Hash" do
     assert { {1 => 2, 3 => 4}.to_s.should eq("{1 => 2, 3 => 4}") }
 
     assert do
-      h = {} of RecursiveHash => RecursiveHash
+      h = {} of HashSpec::RecursiveHash => HashSpec::RecursiveHash
       h[h] = h
       h.to_s.should eq("{{...} => {...}}")
     end
   end
 
   it "does to_h" do
-    h = {a: 1}
+    h = {:a => 1}
     h.to_h.should be(h)
   end
 
@@ -325,6 +329,12 @@ describe "Hash" do
     h3.should eq({1 => 11, 3 => 4, 2 => 8})
   end
 
+  it "merges recursive type (#1693)" do
+    hash = {:foo => "bar"} of Symbol => HashSpec::RecursiveType
+    result = hash.merge({:foobar => "foo"})
+    result.should eq({:foo => "bar", :foobar => "foo"})
+  end
+
   it "merges!" do
     h1 = {1 => 2, 3 => 4}
     h2 = {1 => 5, 2 => 3}
@@ -353,51 +363,51 @@ describe "Hash" do
   end
 
   it "selects" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.select { |k, v| k == :b }
-    h2.should eq({b: 2})
+    h2.should eq({:b => 2})
     h2.should_not be(h1)
   end
 
   it "selects!" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.select! { |k, v| k == :b }
-    h2.should eq({b: 2})
+    h2.should eq({:b => 2})
     h2.should be(h1)
   end
 
   it "returns nil when using select! and no changes were made" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.select! { true }
     h2.should eq(nil)
-    h1.should eq({a: 1, b: 2, c: 3})
+    h1.should eq({:a => 1, :b => 2, :c => 3})
   end
 
   it "rejects" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.reject { |k, v| k == :b }
-    h2.should eq({a: 1, c: 3})
+    h2.should eq({:a => 1, :c => 3})
     h2.should_not be(h1)
   end
 
   it "rejects!" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.reject! { |k, v| k == :b }
-    h2.should eq({a: 1, c: 3})
+    h2.should eq({:a => 1, :c => 3})
     h2.should be(h1)
   end
 
   it "returns nil when using reject! and no changes were made" do
-    h1 = {a: 1, b: 2, c: 3}
+    h1 = {:a => 1, :b => 2, :c => 3}
 
     h2 = h1.reject! { false }
     h2.should eq(nil)
-    h1.should eq({a: 1, b: 2, c: 3})
+    h1.should eq({:a => 1, :b => 2, :c => 3})
   end
 
   it "zips" do
@@ -494,13 +504,13 @@ describe "Hash" do
   end
 
   it "fetches from empty hash with default value" do
-    x = {} of Int32 => HashBreaker
-    breaker = x.fetch(10) { HashBreaker.new(1) }
+    x = {} of Int32 => HashSpec::HashBreaker
+    breaker = x.fetch(10) { HashSpec::HashBreaker.new(1) }
     breaker.x.should eq(1)
   end
 
   it "does to to_s with instance that was never instantiated" do
-    x = {} of Int32 => NeverInstantiated
+    x = {} of Int32 => HashSpec::NeverInstantiated
     x.to_s.should eq("{}")
   end
 
@@ -516,7 +526,7 @@ describe "Hash" do
   end
 
   it "gets each iterator" do
-    iter = {a: 1, b: 2}.each
+    iter = {:a => 1, :b => 2}.each
     iter.next.should eq({:a, 1})
     iter.next.should eq({:b, 2})
     iter.next.should be_a(Iterator::Stop)
@@ -526,7 +536,7 @@ describe "Hash" do
   end
 
   it "gets each key iterator" do
-    iter = {a: 1, b: 2}.each_key
+    iter = {:a => 1, :b => 2}.each_key
     iter.next.should eq(:a)
     iter.next.should eq(:b)
     iter.next.should be_a(Iterator::Stop)
@@ -536,7 +546,7 @@ describe "Hash" do
   end
 
   it "gets each value iterator" do
-    iter = {a: 1, b: 2}.each_value
+    iter = {:a => 1, :b => 2}.each_value
     iter.next.should eq(1)
     iter.next.should eq(2)
     iter.next.should be_a(Iterator::Stop)
@@ -563,7 +573,7 @@ describe "Hash" do
 
   describe "each_with_object" do
     it "passes memo, key and value into block" do
-      hash = {a: 'b'}
+      hash = {:a => 'b'}
       hash.each_with_object(:memo) do |memo, k, v|
         memo.should eq(:memo)
         k.should eq(:a)
@@ -572,7 +582,7 @@ describe "Hash" do
     end
 
     it "reduces the hash to the accumulated value of memo" do
-      hash = {a: 'b', c: 'd', e: 'f'}
+      hash = {:a => 'b', :c => 'd', :e => 'f'}
       result = hash.each_with_object({} of Char => Symbol) do |memo, k, v|
         memo[v] = k
       end
@@ -582,7 +592,7 @@ describe "Hash" do
 
   describe "all?" do
     it "passes key and value into block" do
-      hash = {a: 'b'}
+      hash = {:a => 'b'}
       hash.all? do |k, v|
         k.should eq(:a)
         v.should eq('b')
@@ -590,7 +600,7 @@ describe "Hash" do
     end
 
     it "returns true if the block evaluates truthy for every kv pair" do
-      hash = {a: 'b', c: 'd'}
+      hash = {:a => 'b', :c => 'd'}
       result = hash.all? { |k, v| v < 'e' ? "truthy" : nil }
       result.should be_true
       hash[:d] = 'e'
@@ -599,7 +609,7 @@ describe "Hash" do
     end
 
     it "evaluates the block for only for as many kv pairs as necessary" do
-      hash = {a: 'b', c: 'd'}
+      hash = {:a => 'b', :c => 'd'}
       hash.all? do |k, v|
         raise Exception.new("continued iterating") if v == 'd'
         v == 'a' # this is false for the first kv pair
@@ -609,7 +619,7 @@ describe "Hash" do
 
   describe "any?" do
     it "passes key and value into block" do
-      hash = {a: 'b'}
+      hash = {:a => 'b'}
       hash.any? do |k, v|
         k.should eq(:a)
         v.should eq('b')
@@ -617,7 +627,7 @@ describe "Hash" do
     end
 
     it "returns true if the block evaluates truthy for at least one kv pair" do
-      hash = {a: 'b', c: 'd'}
+      hash = {:a => 'b', :c => 'd'}
       result = hash.any? { |k, v| v > 'b' ? "truthy" : nil }
       result.should be_true
       hash[:d] = 'e'
@@ -626,7 +636,7 @@ describe "Hash" do
     end
 
     it "evaluates the block for only for as many kv pairs as necessary" do
-      hash = {a: 'b', c: 'd'}
+      hash = {:a => 'b', :c => 'd'}
       hash.any? do |k, v|
         raise Exception.new("continued iterating") if v == 'd'
         v == 'b' # this is true for the first kv pair
@@ -634,7 +644,7 @@ describe "Hash" do
     end
 
     it "returns true if the hash contains at least one kv pair and no block is given" do
-      hash = {a: 'b'}
+      hash = {:a => 'b'}
       result = hash.any?
       result.should be_true
 
@@ -646,7 +656,7 @@ describe "Hash" do
 
   describe "reduce" do
     it "passes memo, key and value into block" do
-      hash = {a: 'b'}
+      hash = {:a => 'b'}
       hash.reduce(:memo) do |memo, k, v|
         memo.should eq(:memo)
         k.should eq(:a)
@@ -655,7 +665,7 @@ describe "Hash" do
     end
 
     it "reduces the hash to the accumulated value of memo" do
-      hash = {a: 'b', c: 'd', e: 'f'}
+      hash = {:a => 'b', :c => 'd', :e => 'f'}
       result = hash.reduce("") do |memo, k, v|
         memo + v
       end
@@ -664,48 +674,48 @@ describe "Hash" do
   end
 
   describe "reject" do
-    assert { {a: 2, b: 3}.reject(:b, :d).should eq({a: 2}) }
-    assert { {a: 2, b: 3}.reject(:b, :a).should eq({} of Symbol => Int32) }
-    assert { {a: 2, b: 3}.reject([:b, :a]).should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.reject(:b, :d).should eq({:a => 2}) }
+    assert { {:a => 2, :b => 3}.reject(:b, :a).should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.reject([:b, :a]).should eq({} of Symbol => Int32) }
     it "does not change currrent hash" do
-      h = {a: 3, b: 6, c: 9}
+      h = {:a => 3, :b => 6, :c => 9}
       h2 = h.reject(:b, :c)
-      h.should eq({a: 3, b: 6, c: 9})
+      h.should eq({:a => 3, :b => 6, :c => 9})
     end
   end
 
   describe "reject!" do
-    assert { {a: 2, b: 3}.reject!(:b, :d).should eq({a: 2}) }
-    assert { {a: 2, b: 3}.reject!(:b, :a).should eq({} of Symbol => Int32) }
-    assert { {a: 2, b: 3}.reject!([:b, :a]).should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.reject!(:b, :d).should eq({:a => 2}) }
+    assert { {:a => 2, :b => 3}.reject!(:b, :a).should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.reject!([:b, :a]).should eq({} of Symbol => Int32) }
     it "changes currrent hash" do
-      h = {a: 3, b: 6, c: 9}
+      h = {:a => 3, :b => 6, :c => 9}
       h.reject!(:b, :c)
-      h.should eq({a: 3})
+      h.should eq({:a => 3})
     end
   end
 
   describe "select" do
-    assert { {a: 2, b: 3}.select(:b, :d).should eq({b: 3}) }
-    assert { {a: 2, b: 3}.select.should eq({} of Symbol => Int32) }
-    assert { {a: 2, b: 3}.select(:b, :a).should eq({a: 2, b: 3}) }
-    assert { {a: 2, b: 3}.select([:b, :a]).should eq({a: 2, b: 3}) }
+    assert { {:a => 2, :b => 3}.select(:b, :d).should eq({:b => 3}) }
+    assert { {:a => 2, :b => 3}.select.should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.select(:b, :a).should eq({:a => 2, :b => 3}) }
+    assert { {:a => 2, :b => 3}.select([:b, :a]).should eq({:a => 2, :b => 3}) }
     it "does not change currrent hash" do
-      h = {a: 3, b: 6, c: 9}
+      h = {:a => 3, :b => 6, :c => 9}
       h2 = h.select(:b, :c)
-      h.should eq({a: 3, b: 6, c: 9})
+      h.should eq({:a => 3, :b => 6, :c => 9})
     end
   end
 
   describe "select!" do
-    assert { {a: 2, b: 3}.select!(:b, :d).should eq({b: 3}) }
-    assert { {a: 2, b: 3}.select!.should eq({} of Symbol => Int32) }
-    assert { {a: 2, b: 3}.select!(:b, :a).should eq({a: 2, b: 3}) }
-    assert { {a: 2, b: 3}.select!([:b, :a]).should eq({a: 2, b: 3}) }
+    assert { {:a => 2, :b => 3}.select!(:b, :d).should eq({:b => 3}) }
+    assert { {:a => 2, :b => 3}.select!.should eq({} of Symbol => Int32) }
+    assert { {:a => 2, :b => 3}.select!(:b, :a).should eq({:a => 2, :b => 3}) }
+    assert { {:a => 2, :b => 3}.select!([:b, :a]).should eq({:a => 2, :b => 3}) }
     it "does change currrent hash" do
-      h = {a: 3, b: 6, c: 9}
+      h = {:a => 3, :b => 6, :c => 9}
       h.select!(:b, :c)
-      h.should eq({b: 6, c: 9})
+      h.should eq({:b => 6, :c => 9})
     end
   end
 
@@ -714,8 +724,20 @@ describe "Hash" do
     items.uniq.size
   end
 
-  # Check that Hash can be created with an initial capacity
-  typeof(Hash(Int32, Int32).new(initial_capacity: 1234))
-  typeof(Hash(Int32, Int32).new(0, initial_capacity: 1234))
-  typeof(Hash(Int32, Int32).new(initial_capacity: 1234) { |h, k| h[k] = 0 })
+  it "creates with initial capacity" do
+    hash = Hash(Int32, Int32).new(initial_capacity: 1234)
+    hash.@buckets_size.should eq(1234)
+  end
+
+  it "creates with initial capacity and default value" do
+    hash = Hash(Int32, Int32).new(default_value: 3, initial_capacity: 1234)
+    hash[1].should eq(3)
+    hash.@buckets_size.should eq(1234)
+  end
+
+  it "creates with initial capacity and block" do
+    hash = Hash(Int32, Int32).new(initial_capacity: 1234) { |h, k| h[k] = 3 }
+    hash[1].should eq(3)
+    hash.@buckets_size.should eq(1234)
+  end
 end

@@ -175,39 +175,30 @@ module Crystal
       # to avoid some memory being allocated with plain malloc.
       codgen_well_known_functions @node
 
-      initialize_class_vars_and_consts
+      initialize_argv_and_argc
+
+      initialize_simple_class_vars_and_constants
 
       alloca_vars @mod.vars, @mod
     end
 
-    def initialize_class_vars_and_consts
+    # Here we only initialize simple constants and class variables, those
+    # that has simple values like 1, "foo" and other literals.
+    def initialize_simple_class_vars_and_constants
       @mod.class_var_and_const_initializers.each do |initializer|
-        if initializer.is_a?(Const)
-          initialize_const(initializer)
-        else
+        case initializer
+        when Const
+          next unless initializer.simple?
+
+          initialize_simple_const(initializer)
+        when ClassVarInitializer
+          next unless initializer.node.simple_literal?
+
+          class_var = initializer.owner.class_vars[initializer.name]
+          next if class_var.thread_local?
+
           initialize_class_var(initializer)
         end
-      end
-    end
-
-    def initialize_class_var(initializer)
-      alloca_vars initializer.meta_vars
-
-      accept initializer.node
-      last = @last
-
-      class_var = initializer.owner.class_vars[initializer.name]
-
-      if last.constant? &&
-         !class_var.thread_local? &&
-         (class_var.type == @mod.nil || !class_var.type.includes_type?(@mod.nil)) &&
-         class_var.type == initializer.node.type
-        # If a class variable starts with a constant value, we just initialize
-        # it with it instead of initializing it with null and then doing an assignment
-        get_global class_var_global_name(class_var), class_var.type, class_var, last
-      else
-        global = get_global class_var_global_name(class_var), class_var.type, class_var
-        assign global, class_var.type, initializer.node.type, last
       end
     end
 
@@ -287,6 +278,7 @@ module Crystal
         end
 
         mod.dump if dump_all_llvm || name =~ dump_llvm_regex
+        # puts mod
         mod.verify if env_verify
       end
     end
@@ -380,7 +372,7 @@ module Crystal
 
     def visit(node : TupleLiteral)
       request_value do
-        type = node.type as TupleInstanceType
+        type = node.type.as(TupleInstanceType)
         @last = allocate_tuple(type) do |tuple_type, i|
           exp = node.elements[i]
           exp.accept self
@@ -390,20 +382,39 @@ module Crystal
       false
     end
 
+    def visit(node : NamedTupleLiteral)
+      request_value do
+        type = node.type.as(NamedTupleInstanceType)
+        struct_type = alloca llvm_type(type)
+        node.entries.each do |entry|
+          entry.value.accept self
+          index = type.name_index(entry.key).not_nil!
+          name_and_type = type.names_and_types[index]
+          assign aggregate_index(struct_type, index), name_and_type[1], entry.value.type, @last
+        end
+        @last = struct_type
+      end
+      false
+    end
+
     def visit(node : PointerOf)
       @last = case node_exp = node.exp
               when Var
                 context.vars[node_exp.name].pointer
               when InstanceVar
-                instance_var_ptr (context.type.remove_typedef as InstanceVarContainer), node_exp.name, llvm_self_ptr
+                instance_var_ptr (context.type.remove_typedef.as(InstanceVarContainer)), node_exp.name, llvm_self_ptr
               when ClassVar
+                # Make sure the class var is initializer before taking a pointer of it
+                if node_exp.var.initializer
+                  initialize_class_var(node_exp)
+                end
                 get_global class_var_global_name(node_exp.var), node_exp.type, node_exp.var
               when Global
                 get_global node_exp.name, node_exp.type, node_exp.var
               when Path
-                accept(node_exp)
-                global_name = node_exp.target_const.not_nil!.llvm_name
-                @llvm_mod.globals[global_name]
+                # Make sure the constant is initialized before taking a pointer of it
+                const = node_exp.target_const.not_nil!
+                read_const_pointer(const)
               when ReadInstanceVar
                 node_exp.obj.accept self
                 instance_var_ptr (node_exp.obj.type), node_exp.name, @last
@@ -446,7 +457,7 @@ module Crystal
       location = node.location.try &.original_location
       if location && (type = node.type?)
         proc_name = true
-        filename = location.filename as String
+        filename = location.filename.as(String)
         fun_literal_name = Crystal.safe_mangling(@mod, "~proc#{type}@#{Crystal.relative_filename(filename)}:#{location.line_number}")
       else
         proc_name = false
@@ -515,7 +526,7 @@ module Crystal
     def codegen_return_node(node, node_type)
       old_last = @last
 
-      execute_ensures_until(node.target as Def)
+      execute_ensures_until(node.target.as(Def))
 
       @last = old_last
 
@@ -712,12 +723,12 @@ module Crystal
 
       if break_phi = context.break_phi
         old_last = @last
-        execute_ensures_until(node.target as Call)
+        execute_ensures_until(node.target.as(Call))
         @last = old_last
 
         break_phi.add @last, node_type
       elsif while_exit_block = context.while_exit_block
-        execute_ensures_until(node.target as While)
+        execute_ensures_until(node.target.as(While))
         br while_exit_block
       else
         node.raise "Bug: unknown exit for break"
@@ -734,7 +745,7 @@ module Crystal
       when Block
         if next_phi = context.next_phi
           old_last = @last
-          execute_ensures_until(target as Block)
+          execute_ensures_until(target.as(Block))
           @last = old_last
 
           next_phi.add @last, node_type
@@ -742,7 +753,7 @@ module Crystal
         end
       when While
         if while_block = context.while_block
-          execute_ensures_until(target as While)
+          execute_ensures_until(target.as(While))
           br while_block
           return false
         end
@@ -790,6 +801,8 @@ module Crystal
     end
 
     def visit(node : Assign)
+      return false if node.discarded?
+
       target, value = node.target, node.value
 
       case target
@@ -797,6 +810,10 @@ module Crystal
         accept value
         return false
       when Path
+        const = target.target_const.not_nil!
+        if const.used && !const.simple?
+          initialize_const(const)
+        end
         @last = llvm_nil
         return false
       end
@@ -806,6 +823,10 @@ module Crystal
       # This means it's an instance variable initialize of a generic type,
       # or a class variable initializer
       unless target_type
+        if target.is_a?(ClassVar)
+          # This is the case of a class var initializer
+          initialize_class_var(target)
+        end
         return false
       end
 
@@ -823,7 +844,7 @@ module Crystal
       set_current_debug_location node if @debug
       ptr = case target
             when InstanceVar
-              instance_var_ptr (context.type as InstanceVarContainer), target.name, llvm_self_ptr
+              instance_var_ptr (context.type.as(InstanceVarContainer)), target.name, llvm_self_ptr
             when Global
               get_global target.name, target_type, target.var
             when ClassVar
@@ -936,22 +957,26 @@ module Crystal
       ptr = load indirection_ptr
     end
 
-    def class_var_global_name(node)
-      "#{node.owner}#{node.name.gsub('@', ':')}"
-    end
-
     def visit(node : TypeDeclaration)
+      return false if node.discarded?
+
       var = node.var
       case var
       when Var
         declare_var var
       when Global
         if value = node.value
-          accept value
+          request_value do
+            accept value
+          end
+
           ptr = get_global var.name, var.type, var.var
           assign ptr, var.type, value.type, @last
           return false
         end
+      when ClassVar
+        # This is the case of a class var initializer
+        initialize_class_var(var)
       end
 
       @last = llvm_nil
@@ -992,7 +1017,7 @@ module Crystal
     end
 
     def visit(node : ClassVar)
-      read_global class_var_global_name(node.var), node.type, node.var
+      read_class_var(node)
     end
 
     def read_global(name, type, real_var)
@@ -1057,6 +1082,46 @@ module Crystal
           position_at_end matches_block
           @last = downcast last_value, resulting_type, obj_type, true
         end
+      end
+
+      false
+    end
+
+    def visit(node : NilableCast)
+      request_value do
+        accept node.obj
+      end
+
+      last_value = @last
+
+      obj_type = node.obj.type
+      to_type = node.to.type
+
+      resulting_type = node.type
+      non_nilable_type = node.non_nilable_type
+
+      if node.upcast?
+        @last = upcast last_value, non_nilable_type, obj_type
+        @last = upcast @last, resulting_type, non_nilable_type
+      elsif obj_type != non_nilable_type
+        type_id = type_id last_value, obj_type
+        cmp = match_type_id obj_type, non_nilable_type, type_id
+
+        Phi.open(self, node, @needs_value) do |phi|
+          matches_block, doesnt_match_block = new_blocks "matches", "doesnt_match"
+          cond cmp, matches_block, doesnt_match_block
+
+          position_at_end doesnt_match_block
+          @last = upcast llvm_nil, resulting_type, @mod.nil
+          phi.add @last, resulting_type
+
+          position_at_end matches_block
+          @last = downcast last_value, non_nilable_type, obj_type, true
+          @last = upcast @last, resulting_type, non_nilable_type
+          phi.add @last, resulting_type, last: true
+        end
+      else
+        @last = upcast last_value, resulting_type, obj_type
       end
 
       false
@@ -1128,19 +1193,7 @@ module Crystal
 
     def visit(node : Path)
       if const = node.target_const
-        if initializer = const.initializer
-          @last = initializer
-        else
-          global_name = const.llvm_name
-          global = declare_const(const, global_name)
-
-          if @llvm_mod != @main_mod
-            global = @llvm_mod.globals[global_name]?
-            global ||= @llvm_mod.globals.add(llvm_type(const.value.type), global_name)
-          end
-
-          @last = to_lhs global, const.value.type
-        end
+        read_const(const)
       elsif replacement = node.syntax_replacement
         accept replacement
       else
@@ -1155,48 +1208,6 @@ module Crystal
         end
       end
       false
-    end
-
-    def declare_const(const, global_name = const.llvm_name)
-      @main_mod.globals[global_name]? ||
-        @main_mod.globals.add(llvm_type(const.value.type), global_name)
-    end
-
-    def initialize_const(const, global_name = const.llvm_name)
-      # It might be that the constant is already declared by not initialized
-      global = declare_const(const, global_name)
-
-      in_const_block(const.container) do
-        alloca_vars const.vars
-
-        request_value do
-          accept const.value
-        end
-
-        if const.value.type.passed_by_value?
-          @last = load @last
-        end
-
-        if @last.constant?
-          global.initializer = @last
-          global.global_constant = true
-
-          const_type = const.value.type
-          if const_type.is_a?(PrimitiveType) || const_type.is_a?(EnumType)
-            const.initializer = @last
-          end
-        else
-          if const.value.type.passed_by_value?
-            global.initializer = llvm_type(const.value.type).undef
-          else
-            global.initializer = @last.type.null
-          end
-
-          store @last, global
-        end
-      end
-
-      global
     end
 
     def visit(node : Generic)
@@ -1226,13 +1237,23 @@ module Crystal
       end
 
       # First accept all yield expressions and assign them to block vars
-      request_value do
-        node.exps.each_with_index do |exp, i|
-          accept exp
+      unless node.exps.empty?
+        exp_values = Array(LLVM::Value).new(node.exps.size)
 
+        # We first accept the expressions and store the values, without
+        # assigning them to the block vars yet because we might have
+        # a nested yield that would override a block argument's value
+        node.exps.each_with_index do |exp, i|
+          request_value do
+            accept exp
+          end
+          exp_values << @last
+        end
+
+        node.exps.each_with_index do |exp, i|
           if arg = block.args[i]?
             block_var = block_context.vars[arg.name]
-            assign block_var.pointer, block_var.type, exp.type, @last
+            assign block_var.pointer, block_var.type, exp.type, exp_values[i]
           end
         end
       end
@@ -1429,22 +1450,43 @@ module Crystal
       make_fun type, null, null
     end
 
-    def define_main_function(name, arg_types, return_type)
+    def define_main_function(name, arg_types, return_type, needs_alloca = false)
       old_builder = self.builder
       old_llvm_mod = @llvm_mod
       old_fun = context.fun
+      old_ensure_exception_handlers = @ensure_exception_handlers
+      old_rescue_block = @rescue_block
+      old_entry_block = @entry_block
+      old_alloca_block = @alloca_block
+      old_needs_value = @needs_value
       @llvm_mod = @main_mod
+      @ensure_exception_handlers = nil
+      @rescue_block = nil
 
       a_fun = @main_mod.functions.add(name, arg_types, return_type) do |func|
         context.fun = func
-        func.basic_blocks.append "entry" do |builder|
+        context.fun.linkage = LLVM::Linkage::Internal if @single_module
+        if needs_alloca
+          builder = LLVM::Builder.new
           @builder = wrap_builder builder
+          new_entry_block
           yield func
+          br_from_alloca_to_entry
+        else
+          func.basic_blocks.append "entry" do |builder|
+            @builder = wrap_builder builder
+            yield func
+          end
         end
       end
 
       @builder = old_builder
       @llvm_mod = old_llvm_mod
+      @ensure_exception_handlers = old_ensure_exception_handlers
+      @rescue_block = old_rescue_block
+      @entry_block = old_entry_block
+      @alloca_block = old_alloca_block
+      @needs_value = old_needs_value
       context.fun = old_fun
 
       a_fun
@@ -1906,6 +1948,28 @@ module Crystal
       end
     else
       name
+    end
+  end
+
+  class Program
+    def sprintf(llvm_mod)
+      llvm_mod.functions["sprintf"]? || llvm_mod.functions.add("sprintf", [LLVM::VoidPointer], LLVM::Int32, true)
+    end
+
+    def printf(llvm_mod)
+      llvm_mod.functions["printf"]? || llvm_mod.functions.add("printf", [LLVM::VoidPointer], LLVM::Int32, true)
+    end
+
+    def realloc(llvm_mod)
+      llvm_mod.functions["realloc"]? || llvm_mod.functions.add("realloc", ([LLVM::VoidPointer, LLVM::Int64]), LLVM::VoidPointer)
+    end
+
+    def memset(llvm_mod)
+      llvm_mod.functions["llvm.memset.p0i8.i32"]? || llvm_mod.functions.add("llvm.memset.p0i8.i32", [LLVM::VoidPointer, LLVM::Int8, LLVM::Int32, LLVM::Int32, LLVM::Int1], LLVM::Void)
+    end
+
+    def memcpy(llvm_mod)
+      llvm_mod.functions["llvm.memcpy.p0i8.p0i8.i32"]? || llvm_mod.functions.add("llvm.memcpy.p0i8.p0i8.i32", [LLVM::VoidPointer, LLVM::VoidPointer, LLVM::Int32, LLVM::Int32, LLVM::Int1], LLVM::Void)
     end
   end
 end

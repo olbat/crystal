@@ -5,15 +5,8 @@ module Crystal
     def visit_main(node)
       node.accept MainVisitor.new(self)
 
-      loop do
-        expand_macro_defs
-        fix_empty_types node
-        node = cleanup node
-
-        # The above might have produced more macro def expansions,
-        # so we need to take care of these too
-        break if def_macros.empty?
-      end
+      fix_empty_types node
+      node = cleanup node
 
       node
     end
@@ -62,9 +55,7 @@ module Crystal
 
     property is_initialize : Bool
 
-    @unreachable : Bool
     @unreachable = false
-
     @is_initialize = false
 
     @while_stack : Array(While)
@@ -184,9 +175,10 @@ module Crystal
         end
 
         attributes = check_valid_attributes node, ValidClassVarAttributes, "class variable"
+        class_var = lookup_class_var(var)
+        var.var = class_var
         if Attribute.any?(attributes, "ThreadLocal")
-          var = lookup_class_var(var)
-          var.thread_local = true
+          class_var.thread_local = true
         end
       when Global
         if @untyped_def
@@ -342,6 +334,11 @@ module Crystal
     end
 
     def lookup_similar_instance_variable_name(node, owner)
+      case owner
+      when NonGenericModuleType, GenericClassType, GenericModuleType
+        return nil
+      end
+
       Levenshtein.find(node.name) do |finder|
         owner.all_instance_vars.each_key do |name|
           finder.test(name)
@@ -385,12 +382,10 @@ module Crystal
     end
 
     def visit_read_instance_var(node)
+      node.visitor = self
       node.obj.accept self
-
-      obj_type = node.obj.type
-      var = lookup_instance_var(node, obj_type)
-      node.bind_to var
-      var
+      node.obj.add_observer node
+      node.update
     end
 
     def visit(node : ClassVar)
@@ -879,14 +874,14 @@ module Crystal
         node.raise "undefined fun '#{node.name}' for #{obj_type}" unless matching_fun
 
         call.args = matching_fun.args.map_with_index do |arg, i|
-          Var.new("arg#{i}", arg.type.instance_type) as ASTNode
+          Var.new("arg#{i}", arg.type.instance_type).as(ASTNode)
         end
       else
         call.args = node.args.map_with_index do |arg, i|
           arg.accept self
           arg_type = arg.type.instance_type
           MainVisitor.check_type_allowed_as_proc_argument(node, arg_type)
-          Var.new("arg#{i}", arg_type.virtual_type) as ASTNode
+          Var.new("arg#{i}", arg_type.virtual_type).as(ASTNode)
         end
       end
 
@@ -1056,15 +1051,14 @@ module Crystal
     def check_lib_call(node, obj_type)
       return unless obj_type.is_a?(LibType)
 
-      method = nil
+      # Error quickly if we can't find a fun
+      method = obj_type.lookup_first_def(node.name, false)
+      node.raise "undefined fun '#{node.name}' for #{obj_type}" unless method
 
       node.args.each_with_index do |arg, index|
         case arg
         when FunLiteral
           next unless arg.def.args.any? { |def_arg| !def_arg.restriction && !def_arg.type? }
-
-          method ||= obj_type.lookup_first_def(node.name, false)
-          return unless method
 
           check_lib_call_arg(method, index) do |method_arg_type|
             arg.def.args.each_with_index do |def_arg, def_arg_index|
@@ -1075,9 +1069,6 @@ module Crystal
           end
         when FunPointer
           next unless arg.args.empty?
-
-          method ||= obj_type.lookup_first_def(node.name, false)
-          return unless method
 
           check_lib_call_arg(method, index) do |method_arg_type|
             method_arg_type.arg_types.each do |arg_type|
@@ -1304,6 +1295,10 @@ module Crystal
       node.bind_to node.exp
     end
 
+    def end_visit(node : DoubleSplat)
+      node.bind_to node.exp
+    end
+
     def visit(node : Underscore)
       if @in_type_args == 0
         node.raise "can't read from _"
@@ -1362,7 +1357,7 @@ module Crystal
       nil
     end
 
-    def visit(node : Cast)
+    def visit(node : Cast | NilableCast)
       node.obj.accept self
 
       @in_type_args += 1
@@ -1878,8 +1873,6 @@ module Crystal
         node.type = mod.uint64
       when "object_crystal_type_id"
         node.type = mod.int32
-      when "symbol_hash"
-        node.type = mod.int32
       when "symbol_to_s"
         node.type = mod.string
       when "class"
@@ -1959,7 +1952,7 @@ module Crystal
     end
 
     def visit_pointer_set(node)
-      scope = scope().remove_typedef as PointerInstanceType
+      scope = scope().remove_typedef.as(PointerInstanceType)
 
       value = @vars["value"]
 
@@ -1968,7 +1961,7 @@ module Crystal
     end
 
     def visit_pointer_get(node)
-      scope = scope().remove_typedef as PointerInstanceType
+      scope = scope().remove_typedef.as(PointerInstanceType)
 
       node.bind_to scope.var
     end
@@ -1982,7 +1975,7 @@ module Crystal
     end
 
     def visit_struct_or_union_set(node)
-      scope = @scope as CStructOrUnionType
+      scope = @scope.as(CStructOrUnionType)
 
       field_name = call.not_nil!.name[0...-1]
       expected_type = scope.vars[field_name].type
@@ -2024,12 +2017,12 @@ module Crystal
     end
 
     def visit_struct_get(node)
-      scope = @scope as CStructType
+      scope = @scope.as(CStructType)
       node.bind_to scope.vars[untyped_def.name]
     end
 
     def visit_union_get(node)
-      scope = @scope as CUnionType
+      scope = @scope.as(CUnionType)
       node.bind_to scope.vars[untyped_def.name]
     end
 
@@ -2053,7 +2046,8 @@ module Crystal
                 node_exp.raise "can't take address of #{node_exp}"
               end
             when ReadInstanceVar
-              visit_read_instance_var node_exp
+              visit_read_instance_var(node_exp)
+              node_exp
             else
               node_exp.raise "can't take address of #{node_exp}"
             end
@@ -2272,12 +2266,21 @@ module Crystal
       false
     end
 
+    def end_visit(node : NamedTupleLiteral)
+      node.entries.each &.value.add_observer(node)
+      node.mod = @mod
+      node.update
+      false
+    end
+
     def visit(node : TupleIndexer)
       scope = @scope
       if scope.is_a?(TupleInstanceType)
-        node.type = scope.tuple_types[node.index] as Type
+        node.type = scope.tuple_types[node.index].as(Type)
+      elsif scope.is_a?(NamedTupleInstanceType)
+        node.type = scope.names_and_types[node.index][1]
       elsif scope
-        node.type = ((scope.instance_type as TupleInstanceType).tuple_types[node.index] as Type).metaclass
+        node.type = (scope.instance_type.as(TupleInstanceType).tuple_types[node.index].as(Type)).metaclass
       end
       false
     end
@@ -2416,8 +2419,8 @@ module Crystal
           type_name = type.name.split "::"
 
           path = Path.global(type_name).at(node.location)
-          type_of_keys = TypeOf.new(node.entries.map { |x| x.key as ASTNode }).at(node.location)
-          type_of_values = TypeOf.new(node.entries.map { |x| x.value as ASTNode }).at(node.location)
+          type_of_keys = TypeOf.new(node.entries.map { |x| x.key.as(ASTNode) }).at(node.location)
+          type_of_values = TypeOf.new(node.entries.map { |x| x.value.as(ASTNode) }).at(node.location)
           generic = Generic.new(path, [type_of_keys, type_of_values] of ASTNode).at(node.location)
 
           node.name = generic
@@ -2579,7 +2582,7 @@ module Crystal
     end
 
     def lookup_var_or_instance_var(var : InstanceVar)
-      scope = @scope as InstanceVarContainer
+      scope = @scope.as(InstanceVarContainer)
       scope.lookup_instance_var(var.name)
     end
 

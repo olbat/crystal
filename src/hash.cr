@@ -19,7 +19,7 @@ class Hash(K, V)
   end
 
   def self.new(initial_capacity = nil, &block : (Hash(K, V), K -> V))
-    new block
+    new block, initial_capacity: initial_capacity
   end
 
   def self.new(default_value : V, initial_capacity = nil)
@@ -102,7 +102,7 @@ class Hash(K, V)
   def fetch(key)
     fetch(key) do
       if (block = @block) && key.is_a?(K)
-        block.call(self, key as K)
+        block.call(self, key.as(K))
       else
         raise KeyError.new "Missing hash key: #{key.inspect}"
       end
@@ -494,14 +494,14 @@ class Hash(K, V)
   # hash.merge!({"baz": "qux"})
   # hash # => {"foo" => "bar", "baz" => "qux"}
   # ```
-  def merge!(other : Hash(K, V))
+  def merge!(other : Hash)
     other.each do |k, v|
       self[k] = v
     end
     self
   end
 
-  def merge!(other : Hash(K, V), &block : K, V, V -> V)
+  def merge!(other : Hash, &block)
     other.each do |k, v|
       if self.has_key?(k)
         self[k] = yield k, self[k], v

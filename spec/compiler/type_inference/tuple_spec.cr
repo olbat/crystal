@@ -21,6 +21,18 @@ describe "Type inference: tuples" do
     assert_type("{1, 'a'}[1]") { char }
   end
 
+  it "types tuple [0]?" do
+    assert_type("{1, 'a'}[0]?") { int32 }
+  end
+
+  it "types tuple [1]?" do
+    assert_type("{1, 'a'}[1]?") { char }
+  end
+
+  it "types tuple [2]?" do
+    assert_type("{1, 'a'}[2]?") { |mod| mod.nil }
+  end
+
   it "types tuple metaclass [0]" do
     assert_type("{1, 'a'}.class[0]") { int32.metaclass }
   end
@@ -31,7 +43,18 @@ describe "Type inference: tuples" do
 
   it "gives error when indexing out of range" do
     assert_error "{1, 'a'}[2]",
-      "index out of bounds for tuple {Int32, Char}"
+      "index out of bounds for tuple {Int32, Char} (2 not in 0..1)"
+  end
+
+  it "gives error when indexing out of range on empty tuple" do
+    assert_error %(
+      def tuple(*args)
+        args
+      end
+
+      tuple()[0]
+      ),
+      "index '0' out of bounds for empty tuple"
   end
 
   it "can name a tuple type" do
@@ -94,5 +117,78 @@ describe "Type inference: tuples" do
       foo "foo", 1
       ),
       "recursive splat expansion"
+  end
+
+  it "allows tuple covariance" do
+    assert_type(%(
+      class Obj
+        def initialize
+          @tuple = {Foo.new}
+        end
+
+        def tuple=(@tuple)
+        end
+
+        def tuple
+          @tuple
+        end
+      end
+
+      class Foo
+      end
+
+      class Bar < Foo
+      end
+
+      obj = Obj.new
+      obj.tuple = {Bar.new}
+      obj.tuple
+      )) { tuple_of [types["Foo"].virtual_type!] }
+  end
+
+  it "merges two tuple types of same size" do
+    assert_type(%(
+      def foo
+        if 1 == 2
+          {"foo", 1}
+        else
+          {"foo", nil}
+        end
+      end
+
+      foo
+      )) { tuple_of [string, nilable(int32)] }
+  end
+
+  it "accept tuple in type restriction" do
+    assert_type(%(
+      class Foo
+      end
+
+      class Bar < Foo
+      end
+
+      def foo(x : {Foo})
+        x
+      end
+
+      foo({Bar.new})
+      )) { tuple_of [types["Bar"]] }
+  end
+
+  it "accepts tuple covariance in array" do
+    assert_type(%(
+      require "prelude"
+
+      class Foo
+      end
+
+      class Bar < Foo
+      end
+
+      a = [] of {Foo, Foo}
+      a << {Bar.new, Bar.new}
+      a[0]
+      )) { tuple_of [types["Foo"].virtual_type!, types["Foo"].virtual_type!] }
   end
 end

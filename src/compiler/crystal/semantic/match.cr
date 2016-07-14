@@ -2,7 +2,7 @@ module Crystal
   class MatchContext
     property owner : Type
     property type_lookup : Type
-    getter free_vars : Hash(String, Type)?
+    getter free_vars : Hash(String, TypeVar)?
     getter? strict : Bool
 
     def initialize(@owner, @type_lookup, @free_vars = nil, @strict = false)
@@ -13,7 +13,7 @@ module Crystal
     end
 
     def set_free_var(name, type)
-      free_vars = @free_vars ||= {} of String => Type
+      free_vars = @free_vars ||= {} of String => TypeVar
       free_vars[name] = type
     end
 
@@ -25,9 +25,10 @@ module Crystal
   class Match
     getter def : Def
     getter arg_types : Array(Type)
+    getter named_arg_types : Array(NamedArgumentType)?
     getter context : MatchContext
 
-    def initialize(@def, @arg_types, @context)
+    def initialize(@def, @arg_types, @context, @named_arg_types = nil)
     end
   end
 

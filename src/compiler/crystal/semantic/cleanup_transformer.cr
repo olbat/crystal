@@ -5,7 +5,8 @@ require "../types"
 module Crystal
   class Program
     def cleanup(node)
-      node = node.transform(CleanupTransformer.new(self))
+      transformer = CleanupTransformer.new(self)
+      node = transformer.transform_loop(node)
       puts node if ENV["AFTER"]? == "1"
       node
     end
@@ -16,14 +17,10 @@ module Crystal
         cleanup_type type, transformer
       end
 
-      self.class_var_and_const_initializers.map! do |initializer|
+      self.class_var_and_const_initializers.each do |initializer|
         if initializer.is_a?(ClassVarInitializer)
-          new_node = initializer.node.transform(transformer)
-          unless new_node.same?(initializer.node)
-            initializer = ClassVarInitializer.new(initializer.owner, initializer.name, new_node, initializer.meta_vars)
-          end
+          initializer.node = transformer.transform_loop(initializer.node)
         end
-        initializer
       end
     end
 
@@ -42,7 +39,13 @@ module Crystal
 
     def cleanup_single_type(type, transformer)
       type.instance_vars_initializers.try &.each do |initializer|
-        initializer.value = initializer.value.transform(transformer)
+        initializer.value = transformer.transform_loop(initializer.value)
+      end
+    end
+
+    def cleanup_files
+      tempfiles.each do |tempfile|
+        File.delete(tempfile) rescue nil
       end
     end
   end
@@ -62,6 +65,20 @@ module Crystal
       @def_nest_count = 0
       @last_is_truthy = false
       @last_is_falsey = false
+      @changed = false
+    end
+
+    def transform_loop(node)
+      # We keep transforming the node as long as this produced a change
+      # (this might trigger recalculations and changed that would
+      # need to be transformed too)
+      loop do
+        @changed = false
+        @transformed.clear
+        node = node.transform(self)
+        break unless @changed
+      end
+      node
     end
 
     def after_transform(node)
@@ -261,7 +278,7 @@ module Crystal
 
       if node.created_new_type
         node.resolved_type.types.each_value do |const|
-          (const as Const).initialized = true
+          const.as(Const).initialized = true
         end
       end
 
@@ -290,7 +307,7 @@ module Crystal
       end
 
       if named_args = node.named_args
-        named_args.map! { |named_arg| named_arg.transform(self) as NamedArgument }
+        named_args.map! { |named_arg| named_arg.transform(self).as(NamedArgument) }
       end
       # ~~~
 
@@ -386,6 +403,7 @@ module Crystal
                 # a result the type changed. In that case we need to rebind the
                 # def to the new body, unbinding it from the previous one.
                 if new_type != old_type
+                  @changed = true
                   target_def.unbind_from old_body
                   target_def.bind_to target_def.body
                 end
@@ -397,6 +415,7 @@ module Crystal
         end
 
         if changed
+          @changed = true
           node.unbind_from node.target_defs
           node.target_defs = allocated_defs
           node.bind_to allocated_defs
@@ -414,6 +433,8 @@ module Crystal
         end
       end
 
+      node.replace_splats
+
       # Convert named arguments to regular arguments, because intermediate
       # defs with the needed number of arguments are already defined.
       if named_args = node.named_args
@@ -422,8 +443,6 @@ module Crystal
         end
         node.named_args = nil
       end
-
-      node.replace_splats
 
       # check_comparison_of_unsigned_integer_with_zero_or_negative_literal(node)
 
@@ -751,7 +770,7 @@ module Crystal
           node.raise "can't cast #{obj_type} to #{to_type}"
         end
       elsif obj_type.no_return?
-        node.type = @program.no_return
+        rebind_type node, @program.no_return
       else
         resulting_type = obj_type.filter_by(to_type)
         unless resulting_type
@@ -761,6 +780,21 @@ module Crystal
         unless to_type.allocated?
           return build_raise "can't cast to #{to_type} because it was never instantiated"
         end
+      end
+
+      node
+    end
+
+    def transform(node : NilableCast)
+      node = super
+
+      obj_type = node.obj.type?
+      return node unless obj_type
+
+      to_type = node.to.type
+
+      if obj_type.no_return?
+        rebind_type node, @program.no_return
       end
 
       node
@@ -829,7 +863,7 @@ module Crystal
     end
 
     def transform(node : StructDef)
-      type = node.type as CStructType
+      type = node.type.as(CStructType)
       if type.vars.empty?
         node.raise "empty structs are disallowed"
       end
@@ -837,7 +871,7 @@ module Crystal
     end
 
     def transform(node : UnionDef)
-      type = node.type as CUnionType
+      type = node.type.as(CUnionType)
       if type.vars.empty?
         node.raise "empty unions are disallowed"
       end
@@ -852,16 +886,22 @@ module Crystal
     end
 
     def rebind_node(node, dependency)
-      node.unbind_from node.dependencies?
-      if dependency
-        if dependency.type?
-          node.bind_to dependency
-        else
-          node.set_type(nil)
-        end
-      else
-        node.bind_to @program.nil_var
+      if node.type? != dependency.type?
+        @changed = true
       end
+
+      node.unbind_from node.dependencies?
+      if dependency.type?
+        node.bind_to dependency
+      else
+        node.set_type(nil)
+      end
+    end
+
+    def rebind_type(node, type)
+      node.unbind_from node.dependencies?
+      @changed = node.type? != type
+      node.type = type
     end
 
     @false_literal : BoolLiteral?

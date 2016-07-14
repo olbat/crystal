@@ -4,7 +4,7 @@
 # You can invoke a **fixed subset** of methods on AST nodes at compile-time. These methods
 # are documented on the classes in this module. Additionally, methods of the
 # `Macros` module are top-level methods that you can invoke, like `puts` and `run`.
-module Macros
+module Crystal::Macros
   # Outputs the current macro's buffer to the standard output. Useful for debugging
   # a macro to see what's being generated. Use it like `{{debug()}}`, the parenthesis
   # are mandatory.
@@ -129,27 +129,6 @@ module Macros
     # Returns true if this node's textual representation is not the same as
     # the other node.
     def !=(other : ASTNode) : BoolLiteral
-    end
-
-    # Returns true if this node is *falsey*, and false if it's *truthy*.
-    def ! : BoolLiteral
-    end
-
-    # Tests if this node is of a specific type. For example:
-    #
-    # ```
-    # macro test(node)
-    #   {% if node.is_a?(NumberLiteral) %}
-    #     puts "Got a number literal"
-    #   {% else %}
-    #     puts "Didn't get a number literal"
-    #   {% end %}
-    # end
-    #
-    # test 1    # => prints "Got a number literal"
-    # test "hi" # => prints "Didn't get a number literal"
-    # ```
-    def is_a?(name) : BoolLiteral
     end
 
     # Gives a compile-time error with the given message. This will
@@ -498,6 +477,10 @@ module Macros
     # Similar to `Array#[]`, but returns `NilLiteral` on out of bounds.
     def [](index : NumberLiteral) : ASTNode
     end
+
+    # Similar to `Array#+`.
+    def +(other : ArrayLiteral) : ArrayLiteral
+    end
   end
 
   # A hash literal.
@@ -522,11 +505,50 @@ module Macros
     def values : ArrayLiteral
     end
 
+    # Similar to `Hash#map`
+    def map : ArrayLiteral
+    end
+
     # Similar to `Hash#[]`
     def [](key : ASTNode) : ASTNode
     end
 
     # Similar to `Hash#[]=`
+    def []=(key : ASTNode) : ASTNode
+    end
+  end
+
+  # A named tuple literal.
+  class NamedTupleLiteral < ASTNode
+    # Similar to `NamedTuple#empty?`
+    def empty? : BoolLiteral
+    end
+
+    # Similar to `NamedTuple#keys`
+    def keys : ArrayLiteral
+    end
+
+    # Similar to `NamedTuple#size`
+    def size : NumberLiteral
+    end
+
+    # Similar to `NamedTuple#to_a`
+    def to_a : ArrayLiteral(TupleLiteral)
+    end
+
+    # Similar to `NamedTuple#values`
+    def values : ArrayLiteral
+    end
+
+    # Similar to `NamedTuple#map`
+    def map : ArrayLiteral
+    end
+
+    # Similar to `NamedTuple#[]`
+    def [](key : ASTNode) : ASTNode
+    end
+
+    # Adds or replaces a key.
     def []=(key : ASTNode) : ASTNode
     end
   end

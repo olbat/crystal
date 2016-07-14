@@ -62,6 +62,13 @@ describe "YAML serialization" do
       Tuple(Int32, String, Bool).from_yaml("---\n- 1\n- foo\n- true\n").should eq({1, "foo", true})
     end
 
+    # TODO: uncomment after 0.16.0
+    # it "does for named tuple" do
+    #   tuple = NamedTuple(x: Int32, y: String).from_yaml(%({"y": "hello", "x": 1}))
+    #   tuple.should eq({x: 1, y: "hello"})
+    #   tuple.should be_a(NamedTuple(x: Int32, y: String))
+    # end
+
     it "does for BigInt" do
       big = BigInt.from_yaml("123456789123456789123456789123456789123456789")
       big.should be_a(BigInt)
@@ -74,22 +81,21 @@ describe "YAML serialization" do
       big.should eq(BigFloat.new("1234.567891011121314"))
     end
 
-    # TODO: uncomment after 0.15.0
-    # it "does for Enum with number" do
-    #   YAMLSpecEnum.from_yaml(%("1")).should eq(YAMLSpecEnum::One)
+    it "does for Enum with number" do
+      YAMLSpecEnum.from_yaml(%("1")).should eq(YAMLSpecEnum::One)
 
-    #   expect_raises do
-    #     YAMLSpecEnum.from_yaml(%("3"))
-    #   end
-    # end
+      expect_raises do
+        YAMLSpecEnum.from_yaml(%("3"))
+      end
+    end
 
-    # it "does for Enum with string" do
-    #   YAMLSpecEnum.from_yaml(%("One")).should eq(YAMLSpecEnum::One)
+    it "does for Enum with string" do
+      YAMLSpecEnum.from_yaml(%("One")).should eq(YAMLSpecEnum::One)
 
-    #   expect_raises do
-    #     YAMLSpecEnum.from_yaml(%("Three"))
-    #   end
-    # end
+      expect_raises do
+        YAMLSpecEnum.from_yaml(%("Three"))
+      end
+    end
 
     it "does Time::Format#from_yaml" do
       pull = YAML::PullParser.new("--- 2014-01-02\n...\n")
@@ -144,11 +150,15 @@ describe "YAML serialization" do
     end
 
     it "does for Hash with symbol keys" do
-      Hash(String, Int32).from_yaml({foo: 1, bar: 2}.to_yaml).should eq({"foo" => 1, "bar" => 2})
+      Hash(String, Int32).from_yaml({:foo => 1, :bar => 2}.to_yaml).should eq({"foo" => 1, "bar" => 2})
     end
 
     it "does for Tuple" do
       Tuple(Int32, String).from_yaml({1, "hello"}.to_yaml).should eq({1, "hello"})
+    end
+
+    it "does for NamedTuple" do
+      {x: 1, y: "hello"}.to_yaml.should eq({:x => 1, :y => "hello"}.to_yaml)
     end
 
     it "does for BigInt" do
@@ -168,15 +178,15 @@ describe "YAML serialization" do
 
     it "does a full document" do
       data = {
-        hello:   "World",
-        integer: 2,
-        float:   3.5,
-        hash:    {
-          a: 1,
-          b: 2,
+        :hello   => "World",
+        :integer => 2,
+        :float   => 3.5,
+        :hash    => {
+          :a => 1,
+          :b => 2,
         },
-        array: [1, 2, 3],
-        null:  nil,
+        :array => [1, 2, 3],
+        :null  => nil,
       }
 
       expected = "--- \nhello: World\ninteger: 2\nfloat: 3.5\nhash: \n  a: 1\n  b: 2\narray: \n  - 1\n  - 2\n  - 3\nnull: "

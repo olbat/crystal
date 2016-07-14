@@ -42,14 +42,14 @@ module Crystal
             # we are done. We don't just compare types with ==, there is a special case:
             # a function type with return T can be transpass a restriction of a function
             # with with the same arguments but which returns Void.
-            if signature.arg_types.equals?(match.arg_types) { |x, y| x.compatible_with?(y) }
+            if !signature.named_args && signature.arg_types.equals?(match.arg_types) { |x, y| x.compatible_with?(y) }
               return Matches.new(matches_array, true, owner)
             end
           end
         end
       end
 
-      Matches.new(matches_array, Cover.create(signature.arg_types, matches_array), owner)
+      Matches.new(matches_array, Cover.create(signature, matches_array), owner)
     end
 
     def lookup_matches_with_modules(signature, owner = self, type_lookup = self, matches_array = nil)
@@ -77,7 +77,7 @@ module Crystal
         end
       end
 
-      Matches.new(matches_array, Cover.create(signature.arg_types, matches_array), owner, false)
+      Matches.new(matches_array, Cover.create(signature, matches_array), owner, false)
     end
 
     def lookup_matches(signature, owner = self, type_lookup = self, matches_array = nil)
@@ -130,11 +130,16 @@ module Crystal
       arg_types = signature.arg_types
       named_args = signature.named_args
       splat_index = a_def.splat_index
+      splat_restriction = a_def.args[splat_index].restriction if splat_index
+      double_splat = a_def.double_splat
+      double_splat_restriction = double_splat.try &.restriction
 
-      # If there's a splat in the method and named args in the call,
-      # there's no match (it's confusing to determine what should happen)
-      if named_args && splat_index
-        return nil
+      # If there are arguments past the splat index and no named args, there's no match,
+      # unless all args past it have default values
+      if splat_index && a_def.args.size > splat_index + 1 && !named_args
+        unless (splat_index + 1...a_def.args.size).all? { |i| a_def.args[i].default_value }
+          return nil
+        end
       end
 
       # If there are named args we must check that all mandatory args
@@ -147,15 +152,27 @@ module Crystal
       end
 
       matched_arg_types = nil
+      matched_named_arg_types = nil
 
-      # If there's a restriction on a splat, zero splatted args don't match
-      if splat_index &&
-         a_def.args[splat_index].restriction &&
+      # If there's a restriction on a splat (that's not a splat restriction),
+      # zero splatted args don't match
+      if splat_index && splat_restriction &&
+         !splat_restriction.is_a?(Splat) &&
          Splat.size(a_def, arg_types) == 0
         return nil
       end
 
+      if splat_restriction.is_a?(Splat)
+        splat_arg_types = [] of Type
+      end
+
       a_def.match(arg_types) do |arg, arg_index, arg_type, arg_type_index|
+        # Don't match argument against splat restriction
+        if arg_index == splat_index && splat_arg_types
+          splat_arg_types << arg_type
+          next
+        end
+
         match_arg_type = match_arg(arg_type, arg, context)
         if match_arg_type
           matched_arg_types ||= [] of Type
@@ -166,11 +183,26 @@ module Crystal
         end
       end
 
+      # Match splat arguments against splat restriction
+      if splat_arg_types && splat_restriction.is_a?(Splat)
+        tuple_type = context.owner.program.tuple_of(splat_arg_types)
+        match_arg_type = match_arg(tuple_type, splat_restriction.exp, context)
+        unless match_arg_type
+          return nil
+        end
+      end
+
+      found_unmatched_named_arg = false
+
+      if double_splat_restriction.is_a?(DoubleSplat)
+        double_splat_entries = [] of Tuple(String, Type)
+      end
+
       # Check named args
       if named_args
         min_index = signature.arg_types.size
         named_args.each do |named_arg|
-          found_index = a_def.args.index { |arg| arg.name == named_arg.name }
+          found_index = a_def.args.index { |arg| arg.external_name == named_arg.name }
           if found_index
             # A named arg can't target the splat index
             if found_index == splat_index
@@ -189,12 +221,48 @@ module Crystal
               end
             end
 
-            unless match_arg(named_arg.value.type, a_def.args[found_index], context)
+            match_arg_type = match_arg(named_arg.type, a_def.args[found_index], context)
+            unless match_arg_type
               return nil
             end
+
+            matched_named_arg_types ||= [] of NamedArgumentType
+            matched_named_arg_types << NamedArgumentType.new(named_arg.name, match_arg_type)
           else
+            # If there's a double splat it's ok, the named arg will be put there
+            if a_def.double_splat
+              match_arg_type = named_arg.type
+
+              # If there's a restrction on the double splat, check that it matches
+              if double_splat_restriction
+                if double_splat_entries
+                  double_splat_entries << {named_arg.name, named_arg.type}
+                else
+                  match_arg_type = match_arg(named_arg.type, double_splat_restriction, context)
+                  unless match_arg_type
+                    return nil
+                  end
+                end
+              end
+
+              matched_named_arg_types ||= [] of NamedArgumentType
+              matched_named_arg_types << NamedArgumentType.new(named_arg.name, match_arg_type)
+
+              found_unmatched_named_arg = true
+              next
+            end
+
             return nil
           end
+        end
+      end
+
+      # Match double splat arguments against double splat restriction
+      if double_splat_entries && double_splat_restriction.is_a?(DoubleSplat)
+        named_tuple_type = context.owner.program.named_tuple_of(double_splat_entries)
+        value = match_arg(named_tuple_type, double_splat_restriction.exp, context)
+        unless value
+          return nil
         end
       end
 
@@ -208,11 +276,17 @@ module Crystal
         end
       end
 
+      # If there's a restriction on a double splat, zero matching named arguments don't matc
+      if double_splat && double_splat_restriction &&
+         !double_splat_restriction.is_a?(DoubleSplat) && !found_unmatched_named_arg
+        return nil
+      end
+
       # We reuse a match context without free vars, but we create
       # new ones when there are free vars.
       context = context.clone if context.free_vars
 
-      Match.new(a_def, (matched_arg_types || arg_types), context)
+      Match.new(a_def, (matched_arg_types || arg_types), context, matched_named_arg_types)
     end
 
     def self.match_arg(arg_type, arg : Arg, context : MatchContext)
@@ -286,11 +360,9 @@ module Crystal
 
             base_type_matches.each do |base_type_match|
               if base_type_match.def.macro_def?
-                # We need to copy each submatch if it's a macro (has a return_type)
+                # We need to copy each submatch if it's a macro def
                 full_subtype_matches = subtype_lookup.lookup_matches(signature, subtype_virtual_lookup, subtype_virtual_lookup)
                 full_subtype_matches.each do |full_subtype_match|
-                  next unless full_subtype_match.def.return_type
-
                   cloned_def = full_subtype_match.def.clone
                   cloned_def.macro_owner = full_subtype_match.def.macro_owner
                   cloned_def.owner = subtype_lookup
@@ -301,13 +373,13 @@ module Crystal
                   changes << Change.new(subtype_lookup, cloned_def)
 
                   new_subtype_matches ||= [] of Match
-                  new_subtype_matches.push Match.new(cloned_def, full_subtype_match.arg_types, MatchContext.new(subtype_lookup, full_subtype_match.context.type_lookup, full_subtype_match.context.free_vars))
+                  new_subtype_matches.push Match.new(cloned_def, full_subtype_match.arg_types, MatchContext.new(subtype_lookup, full_subtype_match.context.type_lookup, full_subtype_match.context.free_vars), full_subtype_match.named_arg_types)
                 end
               end
             end
 
             if new_subtype_matches
-              subtype_matches = Matches.new(new_subtype_matches, Cover.create(signature.arg_types, new_subtype_matches))
+              subtype_matches = Matches.new(new_subtype_matches, Cover.create(signature, new_subtype_matches))
             end
           end
 

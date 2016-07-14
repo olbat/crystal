@@ -83,7 +83,7 @@ class Crystal::Command
         puts USAGE
         exit
       when "version".starts_with?(command), "--version" == command, "-v" == command
-        puts "Crystal #{Crystal.version_string}"
+        puts Crystal::Config.description
         exit
       else
         if File.file?(command)
@@ -173,7 +173,7 @@ class Crystal::Command
     vars = {
       "CRYSTAL_CACHE_DIR": CacheDir.instance.dir,
       "CRYSTAL_PATH":      CrystalPath.default_path,
-      "CRYSTAL_VERSION":   Config::VERSION || "",
+      "CRYSTAL_VERSION":   Config.version || "",
     }
 
     if ARGV.empty?
@@ -238,13 +238,25 @@ class Crystal::Command
     col = ""
 
     loc = config.cursor_location.not_nil!.split(':')
-    if loc.size == 3
-      file, line, col = loc
+    if loc.size != 3
+      error "cursor location must be file:line:column"
+    end
+
+    file, line, col = loc
+
+    line_number = line.to_i? || 0
+    if line_number <= 0
+      error "line must be a positive integer, not #{line}"
+    end
+
+    column_number = col.to_i? || 0
+    if column_number <= 0
+      error "column must be a positive integer, not #{col}"
     end
 
     file = File.expand_path(file)
 
-    result = yield Location.new(line.to_i, col.to_i, file), config, result
+    result = yield Location.new(line_number, column_number, file), config, result
 
     case format
     when "json"

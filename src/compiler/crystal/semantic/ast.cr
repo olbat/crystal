@@ -241,6 +241,16 @@ module Crystal
 
       MethodTraceException.new(owner, owner_trace, nil_reason)
     end
+
+    def simple_literal?
+      case self
+      when Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral,
+           StringLiteral, SymbolLiteral
+        true
+      else
+        false
+      end
+    end
   end
 
   class Var
@@ -300,7 +310,8 @@ module Crystal
   end
 
   class Arg
-    def initialize(@name, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, @type : Type? = nil)
+    def initialize(@name : String, @default_value : ASTNode? = nil, @restriction : ASTNode? = nil, external_name : String? = nil, @type : Type? = nil)
+      @external_name = external_name || @name
     end
 
     def clone_without_location
@@ -319,26 +330,17 @@ module Crystal
     property! original_owner : Type
     property vars : MetaVars?
     property yield_vars : Array(Var)?
-
-    getter raises : Bool
-    @raises = false
-
-    property closure : Bool
-    @closure = false
-
-    property self_closured : Bool
-    @self_closured = false
-
+    getter raises = false
+    property closure = false
+    property self_closured = false
     property previous : DefWithMetadata?
     property next : Def?
-
     getter special_vars : Set(String)?
+    property block_nest = 0
+    property? captured_block = false
 
-    property block_nest : Int32
-    @block_nest = 0
-
-    property? captured_block : Bool
-    @captured_block = false
+    # Is this a `new` method that was expanded from an initialize?
+    property? new = false
 
     @macro_owner : Type?
 
@@ -408,9 +410,6 @@ module Crystal
       Splat.at(a_def, objects) do |arg, arg_index, object, object_index|
         yield arg, arg_index, object, object_index
       end
-      Splat.after(a_def, objects) do |arg, arg_index, object, object_index|
-        yield arg, arg_index, object, object_index
-      end
     end
 
     # Yields `arg, arg_index, object, object_index` corresponding
@@ -434,47 +433,28 @@ module Crystal
     # If there are more objects than arguments in the method, they are not yielded.
     # If splat index is `nil`, all args and objects (with their indices) are yielded.
     def self.at(a_def, objects, &block)
-      splat = a_def.splat_index
-      return unless splat
+      splat_index = a_def.splat_index
+      return unless splat_index
 
-      splat_size = objects.size - (a_def.args.size - 1)
+      splat_size = Splat.size(a_def, objects, splat_index)
       splat_size.times do |i|
-        obj_index = splat + i
+        obj_index = splat_index + i
         obj = objects[obj_index]?
         break unless obj
 
-        yield a_def.args[splat], splat, obj, obj_index
-      end
-
-      nil
-    end
-
-    # Yields `arg, arg_index, object, object_index` corresponding
-    # to arguments after a def's splat index, matching the given objects.
-    # If there are more objects than arguments in the method, they are not yielded.
-    # If splat index is `nil`, all args and objects (with their indices) are yielded.
-    def self.after(a_def, objects, &block)
-      splat = a_def.splat_index
-      return unless splat
-
-      splat_size = objects.size - (a_def.args.size - 1)
-      remaining_size = objects.size - (splat + splat_size)
-      remaining_size.times do |i|
-        arg_index = splat + 1 + i
-        obj_index = splat + splat_size + i
-        obj = objects[obj_index]?
-        break unless obj
-
-        yield a_def.args[arg_index], arg_index, obj, obj_index
+        yield a_def.args[splat_index], splat_index, obj, obj_index
       end
 
       nil
     end
 
     # Returns the splat size of this def matching the given objects.
-    # Returns `nil` if this def has no splat index.
-    def self.size(a_def, objects)
-      objects.size - (a_def.args.size - 1)
+    def self.size(a_def, objects, splat_index = a_def.splat_index)
+      if splat_index
+        objects.size - splat_index
+      else
+        0
+      end
     end
   end
 
@@ -490,7 +470,7 @@ module Crystal
     end
 
     def grew?(old_type, new_type)
-      new_type = new_type as PointerInstanceType
+      new_type = new_type.as(PointerInstanceType)
       element_type = new_type.element_type
       type_includes?(element_type, old_type)
     end
@@ -510,8 +490,7 @@ module Crystal
   end
 
   class TypeOf
-    property in_type_args : Bool
-    @in_type_args = false
+    property in_type_args = false
 
     def map_type(type)
       @in_type_args ? type : type.metaclass
@@ -534,14 +513,7 @@ module Crystal
   end
 
   class Cast
-    property? upcast : Bool
-    @upcast = false
-
-    def self.apply(node : ASTNode, type : Type)
-      cast = Cast.new(node, Var.new("cast", type))
-      cast.set_type(type)
-      cast
-    end
+    property? upcast = false
 
     def update(from = nil)
       to_type = to.type
@@ -578,14 +550,52 @@ module Crystal
     end
   end
 
+  class NilableCast
+    property? upcast = false
+    getter! non_nilable_type : Type
+
+    def update(from = nil)
+      to_type = to.type
+
+      obj_type = obj.type?
+
+      # If we don't know what type we are casting from, leave it as nilable to_type
+      unless obj_type
+        @non_nilable_type = non_nilable_type = to_type.virtual_type
+
+        self.type = to_type.program.nilable(non_nilable_type)
+        return
+      end
+
+      filtered_type = obj_type.filter_by(to_type)
+
+      # If the filtered type didn't change it means that an
+      # upcast is being made, for example:
+      #
+      #   1 as Int32 | Float64
+      #   Bar.new as Foo # where Bar < Foo
+      if obj_type == filtered_type && obj_type != to_type && !to_type.is_a?(GenericClassType)
+        filtered_type = to_type.virtual_type
+        @upcast = true
+      end
+
+      # If we don't have a matching type, leave it as the to_type:
+      # later (in after type inference) we will check again.
+      filtered_type ||= to_type.virtual_type
+
+      @non_nilable_type = filtered_type
+
+      # The final type is nilable
+      self.type = filtered_type.program.nilable(filtered_type)
+    end
+  end
+
   class FunDef
     property! external : External
   end
 
   class FunLiteral
-    property force_void : Bool
-    @force_void = false
-
+    property force_void = false
     property expected_return_type : Type?
 
     def update(from = nil)
@@ -606,59 +616,87 @@ module Crystal
     end
 
     def return_type
-      (@type as FunInstanceType).return_type
+      @type.as(FunInstanceType).return_type
     end
   end
 
   class Generic
     property! instance_type : GenericClassType
     property scope : Type?
-    property in_type_args : Bool
-    @in_type_args = false
+    property in_type_args = false
 
     def update(from = nil)
-      type_vars_types = type_vars.map do |node|
-        if node.is_a?(Path) && (syntax_replacement = node.syntax_replacement)
-          node = syntax_replacement
-        end
+      instance_type = self.instance_type
+      if instance_type.is_a?(NamedTupleType)
+        names_and_types = named_args.not_nil!.map do |named_arg|
+          node = named_arg.value
 
-        case node
-        when NumberLiteral
-          type_var = node
-        else
+          if node.is_a?(Path) && (syntax_replacement = node.syntax_replacement)
+            node = syntax_replacement
+          end
+
+          if node.is_a?(NumberLiteral)
+            node.raise "can't use number as type for NamedTuple"
+          end
+
           node_type = node.type?
           return unless node_type
 
-          # If the Path points to a constant, we solve it and use it if it's a number literal
           if node.is_a?(Path) && (target_const = node.target_const)
-            value = target_const.value
-            if value.is_a?(NumberLiteral)
-              type_var = value
-            else
-              # Try to interpret the value
-              visitor = target_const.visitor
-              if visitor
-                numeric_value = visitor.interpret_enum_value(value)
-                numeric_type = node_type.program.int?(numeric_value) || raise "Bug: expected integer type, not #{numeric_value.class}"
-                type_var = NumberLiteral.new(numeric_value, numeric_type.kind)
-                type_var.set_type_from(numeric_type, from)
-              else
-                node.raise "can't use constant #{node} (value = #{value}) as generic type argument, it must be a numeric constant"
-              end
-            end
-          else
-            Crystal.check_type_allowed_in_generics(node, node_type, "can't use #{node_type} as generic type argument")
-            type_var = node_type.virtual_type
+            node.raise "can't use constant as type for NamedTuple"
           end
+
+          Crystal.check_type_allowed_in_generics(node, node_type, "can't use #{node_type} as generic type argument")
+          node_type = node_type.virtual_type
+
+          {named_arg.name, node_type}
         end
 
-        type_var as TypeVar
-      end
+        generic_type = instance_type.instantiate_named_args(names_and_types)
+      else
+        type_vars_types = type_vars.map do |node|
+          if node.is_a?(Path) && (syntax_replacement = node.syntax_replacement)
+            node = syntax_replacement
+          end
 
-      begin
-        generic_type = instance_type.instantiate(type_vars_types)
-      rescue ex : Crystal::Exception
-        raise ex.message
+          case node
+          when NumberLiteral
+            type_var = node
+          else
+            node_type = node.type?
+            return unless node_type
+
+            # If the Path points to a constant, we solve it and use it if it's a number literal
+            if node.is_a?(Path) && (target_const = node.target_const)
+              value = target_const.value
+              if value.is_a?(NumberLiteral)
+                type_var = value
+              else
+                # Try to interpret the value
+                visitor = target_const.visitor
+                if visitor
+                  numeric_value = visitor.interpret_enum_value(value)
+                  numeric_type = node_type.program.int?(numeric_value) || raise "Bug: expected integer type, not #{numeric_value.class}"
+                  type_var = NumberLiteral.new(numeric_value, numeric_type.kind)
+                  type_var.set_type_from(numeric_type, from)
+                else
+                  node.raise "can't use constant #{node} (value = #{value}) as generic type argument, it must be a numeric constant"
+                end
+              end
+            else
+              Crystal.check_type_allowed_in_generics(node, node_type, "can't use #{node_type} as generic type argument")
+              type_var = node_type.virtual_type
+            end
+          end
+
+          type_var.as(TypeVar)
+        end
+
+        begin
+          generic_type = instance_type.instantiate(type_vars_types)
+        rescue ex : Crystal::Exception
+          raise ex.message
+        end
       end
 
       if generic_type_too_nested?(generic_type.generic_nest)
@@ -676,7 +714,7 @@ module Crystal
     def update(from = nil)
       return unless elements.all? &.type?
 
-      types = elements.map { |exp| exp.type as TypeVar }
+      types = elements.map { |exp| exp.type.as(TypeVar) }
       tuple_type = mod.tuple_of types
 
       if generic_type_too_nested?(tuple_type.generic_nest)
@@ -684,6 +722,40 @@ module Crystal
       end
 
       self.type = tuple_type
+    end
+  end
+
+  class NamedTupleLiteral
+    property! mod : Program
+
+    def update(from = nil)
+      return unless entries.all? &.value.type?
+
+      names_and_types = entries.map do |element|
+        {element.key, element.value.type}
+      end
+
+      named_tuple_type = mod.named_tuple_of(names_and_types)
+
+      if generic_type_too_nested?(named_tuple_type.generic_nest)
+        raise "named tuple type too nested: #{named_tuple_type}"
+      end
+
+      self.type = named_tuple_type
+    end
+  end
+
+  class ReadInstanceVar
+    property! visitor : MainVisitor
+    property var : MetaTypeVar?
+
+    def update(from = nil)
+      obj_type = obj.type?
+      return unless obj_type
+
+      var = visitor.lookup_instance_var(self, obj_type)
+      @var = var
+      self.type = var.type
     end
   end
 
@@ -707,7 +779,7 @@ module Crystal
 
     # True if we need to mark this variable as nilable
     # if this variable is read.
-    property nil_if_read : Bool
+    property nil_if_read = false
 
     # This is the context of the variable: who allocates it.
     # It can either be the Program (for top level variables),
@@ -716,15 +788,12 @@ module Crystal
 
     # A variable is closured if it's used in a FunLiteral context
     # where it wasn't created.
-    property closured : Bool
+    property closured = false
 
     # Is this metavar assigned a value?
-    property assigned_to : Bool
+    property assigned_to = false
 
     def initialize(@name : String, @type : Type? = nil)
-      @nil_if_read = false
-      @closured = false
-      @assigned_to = false
     end
 
     # True if this variable belongs to the given context
@@ -771,8 +840,10 @@ module Crystal
 
     # Is this variable thread local? Only applicable
     # to global and class variables.
-    property? thread_local : Bool
-    @thread_local = false
+    property? thread_local = false
+
+    # The (optional) initial value of a class variable
+    property initializer : ClassVarInitializer?
 
     def kind
       case name[0]
@@ -822,15 +893,12 @@ module Crystal
   end
 
   class Block
-    property visited : Bool
+    property visited = false
     property scope : Type?
     property vars : MetaVars?
     property after_vars : MetaVars?
     property context : Def | NonGenericModuleType | Nil
     property fun_literal : ASTNode?
-
-    @visited = false
-    @break : Var?
 
     def break
       @break ||= Var.new("%break")
@@ -838,9 +906,7 @@ module Crystal
   end
 
   class While
-    property has_breaks : Bool
-    @has_breaks = false
-
+    property has_breaks = false
     property break_vars : Array(MetaVars)?
   end
 
@@ -899,8 +965,7 @@ module Crystal
     include RuntimeInitializable
 
     property! resolved_type : ClassType
-    property created_new_type : Bool
-    @created_new_type = false
+    property created_new_type = false
   end
 
   class ModuleDef
@@ -928,19 +993,14 @@ module Crystal
   end
 
   class External
-    property dead : Bool
-    @dead = false
-
-    property used : Bool
-    @used = false
-
+    property dead = false
+    property used = false
     property call_convention : LLVM::CallConvention?
   end
 
   class EnumDef
     property! resolved_type : EnumType
-    property created_new_type : Bool
-    @created_new_type = false
+    property created_new_type = false
   end
 
   class Yield
@@ -963,5 +1023,31 @@ module Crystal
 
   class Asm
     property ptrof : PointerOf?
+  end
+
+  class Assign
+    # Whether a class variable assignment needs to be skipped
+    # because it was replaced with another initializer
+    #
+    # ```
+    # class Foo
+    #   @@x = 1 # This will never execute
+    #   @@x = 2
+    # end
+    # ```
+    property? discarded = false
+  end
+
+  class TypeDeclaration
+    # Whether a class variable assignment needs to be skipped
+    # because it was replaced with another initializer
+    #
+    # ```
+    # class Foo
+    #   @@x : Int32 = 1 # This will never execute
+    #   @@x : Int32 = 2
+    # end
+    # ```
+    property? discarded = false
   end
 end

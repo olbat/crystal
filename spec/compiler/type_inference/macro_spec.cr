@@ -33,7 +33,7 @@ describe "Type inference: macro" do
 
   it "errors if macro def type doesn't match found" do
     assert_error "macro def foo : Int32; 'a'; end; foo",
-      "expected 'foo' to return Int32, not Char"
+      "type must be Int32, not Char"
   end
 
   it "allows subclasses of return type for macro def" do
@@ -111,7 +111,8 @@ describe "Type inference: macro" do
       end
 
       bar
-    }, "Error in line 7: expected 'bar' to return Foo(String), not Foo(Int32)"
+    }, "type must be Foo(String), not Foo(Int32)",
+      inject_primitives: false
   end
 
   it "allows union return types for macro def" do
@@ -131,7 +132,9 @@ describe "Type inference: macro" do
       end
 
       macro def foo : Int32
-        bar_{{ "baz".id }}
+        {% begin %}
+          bar_{{ "baz".id }}
+        {% end %}
       end
 
       foo
@@ -146,7 +149,9 @@ describe "Type inference: macro" do
         end
 
         macro def foo : Int32
-          bar_{{ "baz".id }}
+          {% begin %}
+            bar_{{ "baz".id }}
+          {% end %}
         end
       end
 
@@ -158,7 +163,9 @@ describe "Type inference: macro" do
     assert_type(%(
       class Foo
         macro def foo : Int32
-          bar_{{ "baz".id }}
+          {% begin %}
+            bar_{{ "baz".id }}
+          {% end %}
         end
       end
 
@@ -348,24 +355,6 @@ describe "Type inference: macro" do
       baz
       ),
       "can't define def inside def"
-  end
-
-  it "uses typeof(self.method) in macro def" do
-    assert_type(%(
-      class Foo
-        macro def foo : typeof(self.bar)
-          bar
-        end
-      end
-
-      class Bar < Foo
-        def bar
-          1.5
-        end
-      end
-
-      Bar.new.foo
-      )) { float64 }
   end
 
   it "gives precise location info when doing yield inside macro" do
@@ -642,7 +631,8 @@ describe "Type inference: macro" do
 
       foo
     ),
-      "Error in line 6: expanding macro"
+      "Error in line 6: expanding macro",
+      inject_primitives: false
   end
 
   it "show macro trace in errors (2)" do
@@ -651,7 +641,8 @@ describe "Type inference: macro" do
         Bar
       {% end %}
     ),
-      "Error in line 2: expanding macro"
+      "Error in line 2: expanding macro",
+      inject_primitives: false
   end
 
   it "errors if using macro that is defined later" do
@@ -717,6 +708,16 @@ describe "Type inference: macro" do
       )) { int32 }
   end
 
+  it "errors if named arg matches single splat argument" do
+    assert_error %(
+      macro foo(*y)
+      end
+
+      foo x: 1, y: 2
+      ),
+      "no argument named 'x'"
+  end
+
   it "errors if named arg matches splat argument" do
     assert_error %(
       macro foo(x, *y)
@@ -724,17 +725,27 @@ describe "Type inference: macro" do
 
       foo x: 1, y: 2
       ),
-      "can't use named args with macros that have a splat argument"
+      "wrong number of arguments for macro 'foo' (given 0, expected 1+)"
   end
 
-  it "doesn't allow named arg if there's a splat" do
+  it "says missing argument because positional args don't match past splat" do
     assert_error %(
-      macro foo(*y, x)
+      macro foo(x, *y, z)
       end
 
-      foo 1, x: 2
+      foo 1, 2
       ),
-      "can't use named args with macros that have a splat argument"
+      "missing argument: z"
+  end
+
+  it "allows named args after splat" do
+    assert_type(%(
+      macro foo(*y, x)
+        { {{y}}, {{x}} }
+      end
+
+      foo 1, x: 'a'
+      )) { tuple_of([tuple_of([int32]), char]) }
   end
 
   it "errors if missing one argument" do
@@ -782,5 +793,103 @@ describe "Type inference: macro" do
 
       Foo(Int32).new.t
       )) { int32.metaclass }
+  end
+
+  it "gets named arguments in double splat" do
+    assert_type(%(
+      macro foo(**options)
+        {{options}}
+      end
+
+      foo x: "foo", y: true
+      )) { named_tuple_of({"x": string, "y": bool}) }
+  end
+
+  it "uses splat and double splat" do
+    assert_type(%(
+      macro foo(*args, **options)
+        { {{args}}, {{options}} }
+      end
+
+      foo 1, 'a', x: "foo", y: true
+      )) { tuple_of([tuple_of([int32, char]), named_tuple_of({"x": string, "y": bool})]) }
+  end
+
+  it "double splat and regular args" do
+    assert_type(%(
+      macro foo(x, y, **options)
+        { {{x}}, {{y}}, {{options}} }
+      end
+
+      foo 1, w: 'a', y: true, z: "z"
+      )) { tuple_of([int32, bool, named_tuple_of({"w": char, "z": string})]) }
+  end
+
+  it "declares multi-assign vars for macro" do
+    assert_type(%(
+      macro id(x, y)
+        {{x}}
+        {{y}}
+      end
+
+      a, b = 1, 2
+      id(a, b)
+      1
+      )) { int32 }
+  end
+
+  it "declares rescue variable inside for macro" do
+    assert_type(%(
+      macro id(x)
+        {{x}}
+      end
+
+      begin
+      rescue ex
+        id(ex)
+      end
+
+      1
+      )) { int32 }
+  end
+
+  it "matches with default value after splat" do
+    assert_type(%(
+      macro foo(x, *y, z = true)
+        { {{x}}, {{y}}, {{z}} }
+      end
+
+      foo 1, 'a'
+      )) { tuple_of([int32, tuple_of([char]), bool]) }
+  end
+
+  it "uses bare *" do
+    assert_type(%(
+      macro foo(x, *, y)
+        { {{x}}, {{y}} }
+      end
+
+      foo 10, y: 'a'
+      )) { tuple_of([int32, char]) }
+  end
+
+  it "uses bare *, doesn't let more args" do
+    assert_error %(
+      macro foo(x, *, y)
+      end
+
+      foo 10, 20, y: 30
+      ),
+      "wrong number of arguments for macro 'foo' (given 2, expected 1)"
+  end
+
+  it "uses bare *, doesn't let more args" do
+    assert_error %(
+      def foo(x, *, y)
+      end
+
+      foo 10, 20, y: 30
+      ),
+      "no overload matches"
   end
 end

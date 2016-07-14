@@ -3,7 +3,7 @@ module Crystal
     getter mod : Program
     property types : Array(Type)
 
-    @free_vars : Hash(String, Type)?
+    @free_vars : Hash(String, TypeVar)?
     @type_lookup : Type?
     @scope : Type?
     @typed_def : Def?
@@ -91,8 +91,10 @@ module Crystal
     end
 
     def visit(node : Fun)
+      @in_type_args += 1
       node.inputs.try &.each &.accept(self)
       node.output.try &.accept(self)
+      @in_type_args -= 1
 
       if inputs = node.inputs
         types = inputs.map &.type.instance_type.virtual_type
@@ -158,6 +160,7 @@ module Crystal
 
       @in_type_args += 1
       node.type_vars.each &.accept self
+      node.named_args.try &.each &.value.accept self
       @in_type_args -= 1
 
       return false if node.type?
@@ -167,12 +170,24 @@ module Crystal
         node.raise "#{instance_type} is not a generic class, it's a #{instance_type.type_desc}"
       end
 
-      if instance_type.variadic
+      if instance_type.double_variadic
+        unless node.named_args
+          node.raise "can only instantiate NamedTuple with named arguments"
+        end
+      elsif instance_type.variadic
+        if node.named_args
+          node.raise "can only use named arguments with NamedTuple"
+        end
+
         min_needed = instance_type.type_vars.size - 1
         if node.type_vars.size < min_needed
           node.wrong_number_of "type vars", instance_type, node.type_vars.size, "#{min_needed}+"
         end
       else
+        if node.named_args
+          node.raise "can only use named arguments with NamedTuple"
+        end
+
         if instance_type.type_vars.size != node.type_vars.size
           node.wrong_number_of "type vars", instance_type, node.type_vars.size, instance_type.type_vars.size
         end
@@ -180,6 +195,7 @@ module Crystal
 
       node.instance_type = instance_type
       node.type_vars.each &.add_observer(node)
+      node.named_args.try &.each &.value.add_observer(node)
       node.update
 
       false
@@ -379,10 +395,14 @@ module Crystal
 
     def resolve_ident?(node : Path, create_modules_if_missing = false)
       free_vars = @free_vars
-      if free_vars && !node.global && (type = free_vars[node.names.first]?)
-        target_type = type
-        if node.names.size > 1
-          target_type = lookup_type target_type, node.names[1..-1], node
+      if free_vars && !node.global && (type_var = free_vars[node.names.first]?)
+        if type_var.is_a?(Type)
+          target_type = type_var
+          if node.names.size > 1
+            target_type = lookup_type target_type, node.names[1..-1], node
+          end
+        else
+          target_type = type_var
         end
       else
         base_lookup = node.global ? mod : (@type_lookup || @scope || @types.last)
@@ -836,7 +856,15 @@ module Crystal
         node.raise "can't use class variables in generic types"
       end
 
-      scope as ClassVarContainer
+      if scope.is_a?(VirtualType)
+        node.raise "can't access class variable from a type that is #{scope.base_type.instance_type} or any of its subclasses"
+      end
+
+      if scope.is_a?(VirtualMetaclassType)
+        node.raise "can't access class variable from a type that is #{scope.base_type.instance_type} or any of its subclasses"
+      end
+
+      scope.as(ClassVarContainer)
     end
 
     def lookup_class_var(node)

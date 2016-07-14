@@ -59,9 +59,9 @@ describe Playground::Agent do
     agent.i(1, ["x", "y"]) { {x, y} }.should eq({3, 4})
     agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"{3, 4}","value_type":"{Int32, Int32}","data":{"x":"3","y":"4"}}))
 
-    agent.i(1) { nil as Void? }
+    agent.i(1) { nil.as(Void?) }
     agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"nil","value_type":"Void?"}))
-    agent.i(1) { a_sample_void as Void? }
+    agent.i(1) { a_sample_void.as(Void?) }
     agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"(void)","value_type":"Void?"}))
     agent.i(1) { a_sample_void }
     agent.last_message.should eq(%({"tag":32,"type":"value","line":1,"value":"(void)","value_type":"Void"}))
@@ -208,7 +208,7 @@ describe Playground::AgentInstrumentorTransformer do
     end), <<-CR
     class Foo
       def initialize
-        @x = $p.i(4) { 3 }
+        @x = $p.i(4) { 3 }.as(typeof(3))
       end
       def bar(x)
         x = $p.i(7) { x + x }
@@ -237,8 +237,8 @@ describe Playground::AgentInstrumentorTransformer do
     end), <<-CR
     class Foo
       def initialize
-        @x = $p.i(4) { 3 }
-        @@x = $p.i(5) { 4 }
+        @x = $p.i(4) { 3 }.as(typeof(3))
+        @@x = $p.i(5) { 4 }.as(typeof(4))
       end
       def bar
         $p.i(8) { @x }
@@ -262,7 +262,7 @@ describe Playground::AgentInstrumentorTransformer do
       def initialize(x, y)
         @x = x
         @y = y
-        @z = $p.i(4) { @x + @y }
+        @z = $p.i(4) { @x + @y }.as(typeof(@x + @y))
       end
     end
     CR
@@ -312,7 +312,7 @@ describe Playground::AgentInstrumentorTransformer do
     class Bar
       class Foo
         def initialize
-          @x = $p.i(5) { 3 }
+          @x = $p.i(5) { 3 }.as(typeof(3))
         end
       end
     end
@@ -398,7 +398,7 @@ describe Playground::AgentInstrumentorTransformer do
       class Baz
         class Foo
           def initialize
-            @x = $p.i(6) { 3 }
+            @x = $p.i(6) { 3 }.as(typeof(3))
           end
         end
       end

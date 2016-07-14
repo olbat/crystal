@@ -67,6 +67,13 @@ describe "JSON serialization" do
       tuple.should be_a(Tuple(Int32, String))
     end
 
+    # TODO: uncomment after 0.16.0
+    # it "does for named tuple" do
+    #   tuple = NamedTuple(x: Int32, y: String).from_json(%({"y": "hello", "x": 1}))
+    #   tuple.should eq({x: 1, y: "hello"})
+    #   tuple.should be_a(NamedTuple(x: Int32, y: String))
+    # end
+
     it "does for BigInt" do
       big = BigInt.from_json("123456789123456789123456789123456789123456789")
       big.should be_a(BigInt)
@@ -85,22 +92,26 @@ describe "JSON serialization" do
       big.should eq(BigFloat.new("1234"))
     end
 
-    # TODO: uncomment after 0.15.0
-    # it "does for Enum with number" do
-    #   JSONSpecEnum.from_json("1").should eq(JSONSpecEnum::One)
+    it "does for Enum with number" do
+      JSONSpecEnum.from_json("1").should eq(JSONSpecEnum::One)
 
-    #   expect_raises do
-    #     JSONSpecEnum.from_json("3")
-    #   end
-    # end
+      expect_raises do
+        JSONSpecEnum.from_json("3")
+      end
+    end
 
-    # it "does for Enum with string" do
-    #   JSONSpecEnum.from_json(%("One")).should eq(JSONSpecEnum::One)
+    it "does for Enum with string" do
+      JSONSpecEnum.from_json(%("One")).should eq(JSONSpecEnum::One)
 
-    #   expect_raises do
-    #     JSONSpecEnum.from_json(%("Three"))
-    #   end
-    # end
+      expect_raises do
+        JSONSpecEnum.from_json(%("Three"))
+      end
+    end
+
+    it "deserializes with root" do
+      Int32.from_json(%({"foo": 1}), root: "foo").should eq(1)
+      Array(Int32).from_json(%({"foo": [1, 2]}), root: "foo").should eq([1, 2])
+    end
   end
 
   describe "to_json" do
@@ -154,7 +165,7 @@ describe "JSON serialization" do
     end
 
     it "does for Hash with non-string keys" do
-      {foo: 1, bar: 2}.to_json.should eq(%({"foo":1,"bar":2}))
+      {:foo => 1, :bar => 2}.to_json.should eq(%({"foo":1,"bar":2}))
     end
 
     it "does for Hash with newlines" do
@@ -163,6 +174,10 @@ describe "JSON serialization" do
 
     it "does for Tuple" do
       {1, "hello"}.to_json.should eq(%([1,"hello"]))
+    end
+
+    it "does for NamedTuple" do
+      {x: 1, y: "hello"}.to_json.should eq(%({"x":1,"y":"hello"}))
     end
 
     it "does for Enum" do

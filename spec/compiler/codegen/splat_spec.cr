@@ -4,7 +4,7 @@ describe "Code gen: splat" do
   it "splats" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(*args)
@@ -18,7 +18,7 @@ describe "Code gen: splat" do
   it "splats with another arg" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(x, *args)
@@ -27,20 +27,6 @@ describe "Code gen: splat" do
 
       foo 10, 1, 1
       )).to_i.should eq(12)
-  end
-
-  it "splats with two other args" do
-    run(%(
-      struct Tuple
-        def size; {{@type.size}}; end
-      end
-
-      def foo(x, *args, z)
-        x + args.size + z
-      end
-
-      foo 10, 2, 20
-      )).to_i.should eq(31)
   end
 
   it "splats on call" do
@@ -57,7 +43,7 @@ describe "Code gen: splat" do
   it "splats without args" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(*args)
@@ -71,7 +57,7 @@ describe "Code gen: splat" do
   it "splats with default value" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(x = 100, *args)
@@ -85,7 +71,7 @@ describe "Code gen: splat" do
   it "splats with default value (2)" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(x, y = 100, *args)
@@ -99,7 +85,7 @@ describe "Code gen: splat" do
   it "splats with default value (3)" do
     run(%(
       struct Tuple
-        def size; {{@type.size}}; end
+        def size; {{T.size}}; end
       end
 
       def foo(x, y = 100, *args)
@@ -132,5 +118,28 @@ describe "Code gen: splat" do
       foo = Foo.new 1, 2
       foo.x + foo.y
       )).to_i.should eq(3)
+  end
+
+  it "does #2407" do
+    codegen(%(
+      lib LibC
+        fun exit(Int32) : NoReturn
+      end
+
+      def some
+        yield(1 || (LibC.exit(1); ""))
+      end
+
+      def foo(*objects)
+        bar *objects
+      end
+
+      def bar(objects)
+      end
+
+      some do |value|
+        foo value
+      end
+      ))
   end
 end

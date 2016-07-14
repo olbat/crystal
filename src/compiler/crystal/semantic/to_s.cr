@@ -3,6 +3,10 @@ require "../syntax/to_s"
 module Crystal
   class ToSVisitor
     def visit(node : Arg)
+      if node.external_name != node.name
+        @str << (node.external_name.empty? ? "_" : node.external_name)
+        @str << " "
+      end
       if node.name
         @str << decorate_arg(node, node.name)
       else
@@ -36,7 +40,7 @@ module Crystal
     end
 
     def visit(node : TypeNode)
-      node.type.to_s(@str)
+      node.type.devirtualize.to_s(@str)
       false
     end
   end

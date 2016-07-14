@@ -1,3 +1,59 @@
+## 0.17.4 (2016-05-26)
+
+* Added string literals without interpolations nor escapes: `%q{...}` and `<<-'HEREDOC'`. Also added `%Q{...}` with the same meaning as `%{...}`.
+* A method that uses `@type` inside a macro expression is now automatically detected as being a `macro def`
+* `Float64#to_s` now produces a more accurate output
+* Added `Crystal::VERSION` and other compiler-metadata constants
+* Added `Object.from_json(string_or_io, root)` and a `root` option to `JSON.mapping`
+* Added `System.hostname` (thanks @miketheman)
+* The `property`, `getter` and `setter` macros now also accept assignments (`property x = 0`)
+* The `record` macro now also accepts assignments (`record Point, x = 0, y = 0`)
+* Comparison in macros between `MacroId` and `StringLiteral` or `SymbolLiteral` now work as expected (compares the `id` representation)
+* Some bug fixes
+
+## 0.17.3 (2016-05-20)
+
+* Fixed: multiple macro runs executions didn't work well (#2624)
+* Fixed incorrect formatting of underscore in unpacked block arguments
+* Fixed wrong codegen for global variable assignment in type declaration (#2619)
+* Fixed initialize default arguments where evaluated at the class scope (#731)
+* The type guesser can now infer a block type from `def initialize(&@block)`
+* Allow type restriction in double splat argument (similar to restriction in single splat)
+* Allow splat restriction in splat argument (useful for `Tuple.new`)
+* Allow double splat restriction in double splat argument (useful for `NamedTuple.new`)
+
+## 0.17.2 (2016-05-18)
+
+* Fixed crash when using pointerof of constant
+
+## 0.17.1 (2016-05-18)
+
+* Constants and class vars are no longer initialized before "main". Now their initialization order goes along with "main", similar to how it works in Ruby (much more intuitive)
+* Added syntax for unpacking block arguments: `foo { |(x, y)| ... }`
+* Added `NamedTupleLiteral#map` and `HashLiteral#map` in macros (thanks @jhass)
+* Fixed wrong codgen for tuples/named tuples merge with pass-by-value types
+* Formatter: fixed incorrect format for named tuple type
+
+## 0.17.0 (2016-05-17)
+
+* **(breaking change)** Macro defs are now parsed like regular methods. Enclose the body with `{% begin %} .. {% end %}` if you needed that behaviour
+* **(breaking change)** A union of two tuples of the same size results in a tuple with the unions of the types in each position. This only affects code that later tested a tuple's type with `is_a?`, for example `tuple.is_a?({Int32, String})`
+* **(breaking change)** Method arguments have now a different semantic. This only affects methods that had a splat argument followed by other arguments.
+* **(breaking change)** The syntax `{foo: 1, bar: 2}` now denotes a `NamedTuple`, not a `Hash` with symbol as keys. Use `{:foo => 1, :bar => 2}` instead
+* The syntax `exp as Type` is now deprecated and will be removed in the next version. Use `crystal tool format` to automatically upgrade your code
+* The compiler now gives an error when trying to define a method named `!`, `is_a?`, `responds_to?`, `nil?`, `as` or `as?`
+* Added the `NamedTuple` type
+* Added double splatting
+* Added external argument names
+* Macro defs return type is no longer mandatory
+* Added `as?`: similar to `as`, but returns `nil` when the type doesn't match
+* Added `Number::Primitive` alias
+* Added `Tuple#+(Tuple)`
+* Added `ArrayLiteral#+(ArrayLiteral)` in macros
+* `Crypto::MD5` now allows `Slice(UInt8)` and a block form (thanks @will)
+* Added docs for XML (thanks @Hamdiakoguz)
+* Many bug fixes
+
 ## 0.16.0 (2016-05-05)
 
 * **(breaking change)** Instance, class and global variables types must be told to the compiler, [either explicitly or through a series of syntactic rules](http://crystal-lang.org/docs/syntax_and_semantics/type_inference.html)
@@ -8,7 +64,7 @@
 * **(breaking change)** `Int#**(Int)` now returns an integer, and raises if the argument is negative. Use a float base or exponent for negative exponents to work.
 * **(breaking change)** `Slice#to_s` and `StaticArray#to_s` now include their type name in the output
 * Support for FreeBSD and musl libc has landed (thanks @ysbaddaden)
-* The `.crystal` directory is now created at `$HOME/cache/.crystal` or `$HOME/.crystal` (or others similar), with a fallback to the current directory
+* The `.crystal` directory is now created at `$HOME/.cache/crystal` or `$HOME/.crystal` (or others similar), with a fallback to the current directory
 * `crystal doc` and `crystal tool hierarchy` are now much faster. Additionally, the hierarchy tool shows types for generic types, and doesn't show instantiations anymore (wasn't very useful)
 * `!` now does type filtering (for example you can do `!x || x.bar`, assuming `x` can be `nil` and the non-nil type responds to `bar`)
 * Named arguments can now match any argument, even if they don't have a default value. Make sure to read the [docs](http://crystal-lang.org/docs/syntax_and_semantics/default_and_named_arguments.html)

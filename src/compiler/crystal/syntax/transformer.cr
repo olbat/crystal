@@ -53,7 +53,7 @@ module Crystal
       end
 
       if named_args = node.named_args
-        named_args.map! { |named_arg| named_arg.transform(self) as NamedArgument }
+        named_args.map! { |named_arg| named_arg.transform(self).as(NamedArgument) }
       end
 
       node
@@ -103,6 +103,13 @@ module Crystal
       node
     end
 
+    def transform(node : NamedTupleLiteral)
+      node.entries.map! do |entry|
+        NamedTupleLiteral::Entry.new(entry.key, entry.value.transform(self))
+      end
+      node
+    end
+
     def transform(node : If)
       node.cond = node.cond.transform(self)
       node.then = node.then.transform(self)
@@ -138,6 +145,10 @@ module Crystal
         node.receiver = receiver.transform(self)
       end
 
+      if double_splat = node.double_splat
+        node.double_splat = double_splat.transform(self)
+      end
+
       if block_arg = node.block_arg
         node.block_arg = block_arg.transform(self)
       end
@@ -147,6 +158,10 @@ module Crystal
 
     def transform(node : Macro)
       transform_many node.args
+
+      if double_splat = node.double_splat
+        node.double_splat = double_splat.transform(self)
+      end
 
       if block_arg = node.block_arg
         node.block_arg = block_arg.transform(self)
@@ -237,7 +252,7 @@ module Crystal
     end
 
     def transform(node : Generic)
-      node.name = node.name.transform(self) as Path
+      node.name = node.name.transform(self).as(Path)
       transform_many node.type_vars
       node
     end
@@ -296,7 +311,7 @@ module Crystal
     end
 
     def transform(node : Block)
-      node.args.map! { |exp| exp.transform(self) as Var }
+      node.args.map! { |exp| exp.transform(self).as(Var) }
       node.body = node.body.transform(self)
       node
     end
@@ -484,9 +499,16 @@ module Crystal
       node
     end
 
+    def transform(node : NilableCast)
+      node.obj = node.obj.transform(self)
+      node.to = node.to.transform(self)
+      node
+    end
+
     def transform(node : TypeDeclaration)
       node.var = node.var.transform(self)
       node.declared_type = node.declared_type.transform(self)
+      node.value = node.value.try &.transform(self)
       node
     end
 
@@ -502,6 +524,11 @@ module Crystal
     end
 
     def transform(node : Splat)
+      node.exp = node.exp.transform(self)
+      node
+    end
+
+    def transform(node : DoubleSplat)
       node.exp = node.exp.transform(self)
       node
     end

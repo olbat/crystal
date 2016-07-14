@@ -25,9 +25,13 @@ module Crystal
           raise arg.to_s
         end
       when "=="
-        BoolLiteral.new(self == args.first)
+        interpret_one_arg_method(method, args) do |arg|
+          BoolLiteral.new(self == arg)
+        end
       when "!="
-        BoolLiteral.new(self != args.first)
+        interpret_one_arg_method(method, args) do |arg|
+          BoolLiteral.new(self != arg)
+        end
       when "!"
         BoolLiteral.new(!truthy?)
       else
@@ -181,7 +185,7 @@ module Crystal
       end
 
       NumberLiteral.new(bin_op(op, args) { |me, other|
-        other_kind = (args.first as NumberLiteral).kind
+        other_kind = args.first.as(NumberLiteral).kind
         if other_kind == :f32 || other_kind == :f64
           raise "argument to NumberLiteral##{op} can't be float literal: #{self}"
         end
@@ -224,6 +228,13 @@ module Crystal
   class StringLiteral
     def interpret(method, args, block, interpreter)
       case method
+      when "==", "!="
+        case arg = args.first?
+        when MacroId
+          return BoolLiteral.new(@value == arg.value)
+        else
+          return super
+        end
       when "[]"
         interpret_one_arg_method(method, args) do |arg|
           case arg
@@ -392,135 +403,8 @@ module Crystal
 
   class ArrayLiteral
     def interpret(method, args, block, interpreter)
-      case method
-      when "any?"
-        interpret_argless_method(method, args) do
-          raise "any? expects a block" unless block
-
-          block_arg = block.args.first?
-
-          BoolLiteral.new(elements.any? do |elem|
-            interpreter.define_var(block_arg.name, elem) if block_arg
-            interpreter.accept(block.body).truthy?
-          end)
-        end
-      when "all?"
-        interpret_argless_method(method, args) do
-          raise "all? expects a block" unless block
-
-          block_arg = block.args.first?
-
-          BoolLiteral.new(elements.all? do |elem|
-            interpreter.define_var(block_arg.name, elem) if block_arg
-            interpreter.accept(block.body).truthy?
-          end)
-        end
-      when "argify"
-        interpret_argless_method(method, args) do
-          MacroId.new(elements.join ", ")
-        end
-      when "empty?"
-        interpret_argless_method(method, args) { BoolLiteral.new(elements.empty?) }
-      when "find"
-        interpret_argless_method(method, args) do
-          raise "find expects a block" unless block
-
-          block_arg = block.args.first?
-
-          found = elements.find do |elem|
-            interpreter.define_var(block_arg.name, elem) if block_arg
-            interpreter.accept(block.body).truthy?
-          end
-          found ? found : NilLiteral.new
-        end
-      when "first"
-        interpret_argless_method(method, args) { elements.first? || NilLiteral.new }
-      when "includes?"
-        interpret_one_arg_method(method, args) do |arg|
-          BoolLiteral.new(elements.includes?(arg))
-        end
-      when "join"
-        interpret_one_arg_method(method, args) do |arg|
-          StringLiteral.new(elements.map(&.to_macro_id).join arg.to_macro_id)
-        end
-      when "last"
-        interpret_argless_method(method, args) { elements.last? || NilLiteral.new }
-      when "size"
-        interpret_argless_method(method, args) { NumberLiteral.new(elements.size) }
-      when "map"
-        interpret_argless_method(method, args) do
-          raise "map expects a block" unless block
-
-          block_arg = block.args.first?
-
-          ArrayLiteral.map(elements) do |elem|
-            interpreter.define_var(block_arg.name, elem) if block_arg
-            interpreter.accept block.body
-          end
-        end
-      when "select"
-        interpret_argless_method(method, args) do
-          raise "select expects a block" unless block
-          filter(block, interpreter)
-        end
-      when "reject"
-        interpret_argless_method(method, args) do
-          raise "reject expects a block" unless block
-          filter(block, interpreter, keep: false)
-        end
-      when "shuffle"
-        ArrayLiteral.new(elements.shuffle)
-      when "sort"
-        ArrayLiteral.new(elements.sort { |x, y| x.interpret_compare(y) })
-      when "uniq"
-        ArrayLiteral.new(elements.uniq)
-      when "[]"
-        case args.size
-        when 1
-          arg = args.first
-          unless arg.is_a?(NumberLiteral)
-            arg.raise "argument to [] must be a number, not #{arg.class_desc}:\n\n#{arg}"
-          end
-
-          index = arg.to_number.to_i
-          value = elements[index]?
-          if value
-            value
-          else
-            NilLiteral.new
-          end
-        else
-          wrong_number_of_arguments "ArrayLiteral#[]", args.size, 1
-        end
-      when "unshift"
-        case args.size
-        when 1
-          elements.unshift(args.first)
-          self
-        else
-          wrong_number_of_arguments "ArrayLiteral#unshift", args.size, 1
-        end
-      when "push", "<<"
-        case args.size
-        when 1
-          elements << args.first
-          self
-        else
-          wrong_number_of_arguments "ArrayLiteral##{method}", args.size, 1
-        end
-      else
-        super
-      end
-    end
-
-    def filter(block, interpreter, keep = true)
-      block_arg = block.args.first?
-
-      ArrayLiteral.new(elements.select { |elem|
-        interpreter.define_var(block_arg.name, elem) if block_arg
-        block_result = interpreter.accept(block.body).truthy?
-        keep ? block_result : !block_result
-      })
+      value = intepret_array_or_tuple_method(self, ArrayLiteral, method, args, block, interpreter)
+      value || super
     end
   end
 
@@ -539,6 +423,19 @@ module Crystal
         end
       when "values"
         interpret_argless_method(method, args) { ArrayLiteral.map entries, &.value }
+      when "map"
+        interpret_argless_method(method, args) {
+          raise "map expects a block" unless block
+
+          block_arg_key = block.args[0]?
+          block_arg_value = block.args[1]?
+
+          ArrayLiteral.map(entries) do |entry|
+            interpreter.define_var(block_arg_key.name, entry.key) if block_arg_key
+            interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
+            interpreter.accept block.body
+          end
+        }
       when "[]"
         case args.size
         when 1
@@ -570,34 +467,88 @@ module Crystal
     end
   end
 
-  class TupleLiteral
+  class NamedTupleLiteral
     def interpret(method, args, block, interpreter)
       case method
       when "empty?"
-        interpret_argless_method(method, args) { BoolLiteral.new(elements.empty?) }
+        interpret_argless_method(method, args) { BoolLiteral.new(entries.empty?) }
+      when "keys"
+        interpret_argless_method(method, args) { ArrayLiteral.map(entries) { |entry| MacroId.new(entry.key) } }
       when "size"
-        interpret_argless_method(method, args) { NumberLiteral.new(elements.size) }
+        interpret_argless_method(method, args) { NumberLiteral.new(entries.size) }
+      when "to_a"
+        interpret_argless_method(method, args) do
+          ArrayLiteral.map(entries) { |entry| TupleLiteral.new([MacroId.new(entry.key), entry.value] of ASTNode) }
+        end
+      when "values"
+        interpret_argless_method(method, args) { ArrayLiteral.map entries, &.value }
+      when "map"
+        interpret_argless_method(method, args) {
+          raise "map expects a block" unless block
+
+          block_arg_key = block.args[0]?
+          block_arg_value = block.args[1]?
+
+          ArrayLiteral.map(entries) do |entry|
+            interpreter.define_var(block_arg_key.name, MacroId.new(entry.key)) if block_arg_key
+            interpreter.define_var(block_arg_value.name, entry.value) if block_arg_value
+            interpreter.accept block.body
+          end
+        }
       when "[]"
         case args.size
         when 1
-          arg = args.first
-          unless arg.is_a?(NumberLiteral)
-            arg.raise "argument to [] must be a number, not #{arg.class_desc}:\n\n#{arg}"
+          key = args.first
+
+          case key
+          when SymbolLiteral
+            key = key.value
+          when MacroId
+            key = key.value
+          else
+            return NilLiteral.new
           end
 
-          index = arg.to_number.to_i
-          value = elements[index]?
-          if value
-            value
-          else
-            raise "tuple index out of bounds: #{index} in #{self}"
-          end
+          entry = entries.find &.key.==(key)
+          entry.try(&.value) || NilLiteral.new
         else
-          wrong_number_of_arguments "TupleLiteral#[]", args.size, 1
+          wrong_number_of_arguments "NamedTupleLiteral#[]", args.size, 1
+        end
+      when "[]="
+        case args.size
+        when 2
+          key, value = args
+
+          case key
+          when SymbolLiteral
+            key = key.value
+          when MacroId
+            key = key.value
+          else
+            raise "expected 'NamedTupleLiteral#[]=' first argument to be a SymbolLiteral or MacroId, not #{key.class_desc}"
+          end
+
+          index = entries.index &.key.==(key)
+          if index
+            entries[index] = NamedTupleLiteral::Entry.new(key, value)
+          else
+            entries << NamedTupleLiteral::Entry.new(key, value)
+          end
+
+          value
+        else
+          wrong_number_of_arguments "NamedTupleLiteral#[]=", args.size, 2
         end
       else
         super
       end
+    end
+  end
+
+  class TupleLiteral
+    def interpret(method, args, block, interpreter)
+      value = intepret_array_or_tuple_method(self, TupleLiteral, method, args, block, interpreter)
+      value || super
     end
   end
 
@@ -730,7 +681,16 @@ module Crystal
   class MacroId
     def interpret(method, args, block, interpreter)
       case method
-      when "==", "!=", "stringify", "class_name", "symbolize"
+      when "==", "!="
+        case arg = args.first?
+        when StringLiteral
+          return BoolLiteral.new(@value == arg.value)
+        when SymbolLiteral
+          return BoolLiteral.new(@value == arg.value)
+        else
+          return super
+        end
+      when "stringify", "class_name", "symbolize"
         return super
       end
 
@@ -749,7 +709,14 @@ module Crystal
   class SymbolLiteral
     def interpret(method, args, block, interpreter)
       case method
-      when "==", "!=", "stringify", "class_name", "symbolize"
+      when "==", "!="
+        case arg = args.first?
+        when MacroId
+          return BoolLiteral.new(@value == arg.value)
+        else
+          return super
+        end
+      when "stringify", "class_name", "symbolize"
         return super
       end
 
@@ -771,7 +738,7 @@ module Crystal
       when "union_types"
         interpret_argless_method(method, args) { TypeNode.union_types(type) }
       when "name"
-        interpret_argless_method(method, args) { MacroId.new(type.to_s) }
+        interpret_argless_method(method, args) { MacroId.new(type.devirtualize.to_s) }
       when "type_vars"
         interpret_argless_method(method, args) { TypeNode.type_vars(type) }
       when "instance_vars"
@@ -813,10 +780,43 @@ module Crystal
       when "size"
         interpret_argless_method(method, args) do
           type = type.instance_type
-          if type.is_a?(TupleInstanceType)
+          case type
+          when TupleInstanceType
             NumberLiteral.new(type.tuple_types.size)
+          when NamedTupleInstanceType
+            NumberLiteral.new(type.names_and_types.size)
           else
-            raise "undefined method 'size' for TypeNode of type #{type} (must be a tuple type)"
+            raise "undefined method 'size' for TypeNode of type #{type} (must be a tuple or named tuple type)"
+          end
+        end
+      when "keys"
+        interpret_argless_method(method, args) do
+          type = type.instance_type
+          if type.is_a?(NamedTupleInstanceType)
+            ArrayLiteral.map(type.names_and_types) { |name_and_type| MacroId.new(name_and_type[0]) }
+          else
+            raise "undefined method 'keys' for TypeNode of type #{type} (must be a named tuple type)"
+          end
+        end
+      when "[]"
+        interpret_one_arg_method(method, args) do |arg|
+          type = type.instance_type
+          if type.is_a?(NamedTupleInstanceType)
+            case arg
+            when SymbolLiteral
+              key = arg.value
+            when MacroId
+              key = arg.value
+            else
+              return NilLiteral.new
+            end
+            index = type.name_index(key)
+            unless index
+              return NilLiteral.new
+            end
+            TypeNode.new(type.names_and_types[index][1])
+          else
+            raise "undefined method '[]' for TypeNode of type #{type} (must be a named tuple type)"
           end
         end
       when "class"
@@ -842,7 +842,7 @@ module Crystal
           end
         end
       elsif type.is_a?(GenericType)
-        ArrayLiteral.map((type as GenericType).type_vars) do |type_var|
+        ArrayLiteral.map(type.as(GenericType).type_vars) do |type_var|
           MacroId.new(type_var)
         end
       else
@@ -895,7 +895,7 @@ module Crystal
     end
 
     def self.constants(type)
-      names = type.types.map { |name, member_type| MacroId.new(name) as ASTNode }
+      names = type.types.map { |name, member_type| MacroId.new(name).as(ASTNode) }
       ArrayLiteral.new names
     end
 
@@ -1057,4 +1057,148 @@ module Crystal
       end
     end
   end
+end
+
+private def intepret_array_or_tuple_method(object, klass, method, args, block, interpreter)
+  case method
+  when "any?"
+    object.interpret_argless_method(method, args) do
+      raise "any? expects a block" unless block
+
+      block_arg = block.args.first?
+
+      Crystal::BoolLiteral.new(object.elements.any? do |elem|
+        interpreter.define_var(block_arg.name, elem) if block_arg
+        interpreter.accept(block.body).truthy?
+      end)
+    end
+  when "all?"
+    object.interpret_argless_method(method, args) do
+      raise "all? expects a block" unless block
+
+      block_arg = block.args.first?
+
+      Crystal::BoolLiteral.new(object.elements.all? do |elem|
+        interpreter.define_var(block_arg.name, elem) if block_arg
+        interpreter.accept(block.body).truthy?
+      end)
+    end
+  when "argify"
+    object.interpret_argless_method(method, args) do
+      Crystal::MacroId.new(object.elements.join ", ")
+    end
+  when "empty?"
+    object.interpret_argless_method(method, args) { Crystal::BoolLiteral.new(object.elements.empty?) }
+  when "find"
+    object.interpret_argless_method(method, args) do
+      raise "find expects a block" unless block
+
+      block_arg = block.args.first?
+
+      found = object.elements.find do |elem|
+        interpreter.define_var(block_arg.name, elem) if block_arg
+        interpreter.accept(block.body).truthy?
+      end
+      found ? found : Crystal::NilLiteral.new
+    end
+  when "first"
+    object.interpret_argless_method(method, args) { object.elements.first? || Crystal::NilLiteral.new }
+  when "includes?"
+    object.interpret_one_arg_method(method, args) do |arg|
+      Crystal::BoolLiteral.new(object.elements.includes?(arg))
+    end
+  when "join"
+    object.interpret_one_arg_method(method, args) do |arg|
+      Crystal::StringLiteral.new(object.elements.map(&.to_macro_id).join arg.to_macro_id)
+    end
+  when "last"
+    object.interpret_argless_method(method, args) { object.elements.last? || Crystal::NilLiteral.new }
+  when "size"
+    object.interpret_argless_method(method, args) { Crystal::NumberLiteral.new(object.elements.size) }
+  when "map"
+    object.interpret_argless_method(method, args) do
+      raise "map expects a block" unless block
+
+      block_arg = block.args.first?
+
+      klass.map(object.elements) do |elem|
+        interpreter.define_var(block_arg.name, elem) if block_arg
+        interpreter.accept block.body
+      end
+    end
+  when "select"
+    object.interpret_argless_method(method, args) do
+      raise "select expects a block" unless block
+      filter(object, klass, block, interpreter)
+    end
+  when "reject"
+    object.interpret_argless_method(method, args) do
+      raise "reject expects a block" unless block
+      filter(object, klass, block, interpreter, keep: false)
+    end
+  when "shuffle"
+    klass.new(object.elements.shuffle)
+  when "sort"
+    klass.new(object.elements.sort { |x, y| x.interpret_compare(y) })
+  when "uniq"
+    klass.new(object.elements.uniq)
+  when "[]"
+    case args.size
+    when 1
+      arg = args.first
+      unless arg.is_a?(Crystal::NumberLiteral)
+        arg.raise "argument to [] must be a number, not #{arg.class_desc}:\n\n#{arg}"
+      end
+
+      index = arg.to_number.to_i
+      value = object.elements[index]?
+      if value
+        value
+      else
+        Crystal::NilLiteral.new
+      end
+    else
+      object.wrong_number_of_arguments "#{klass}#[]", args.size, 1
+    end
+  when "unshift"
+    case args.size
+    when 1
+      object.elements.unshift(args.first)
+      object
+    else
+      object.wrong_number_of_arguments "#{klass}#unshift", args.size, 1
+    end
+  when "push", "<<"
+    case args.size
+    when 1
+      object.elements << args.first
+      object
+    else
+      object.wrong_number_of_arguments "#{klass}##{method}", args.size, 1
+    end
+  when "+"
+    object.interpret_one_arg_method(method, args) do |arg|
+      case arg
+      when Crystal::TupleLiteral
+        other_elements = arg.elements
+      when Crystal::ArrayLiteral
+        other_elements = arg.elements
+      else
+        arg.raise "argument to `#{klass}#+` must be a tuple or array, not #{arg.class_desc}:\n\n#{arg}"
+      end
+      klass.new(object.elements + other_elements)
+    end
+  else
+    nil
+  end
+end
+
+def filter(object, klass, block, interpreter, keep = true)
+  block_arg = block.args.first?
+
+  klass.new(object.elements.select { |elem|
+    interpreter.define_var(block_arg.name, elem) if block_arg
+    block_result = interpreter.accept(block.body).truthy?
+    keep ? block_result : !block_result
+  })
 end

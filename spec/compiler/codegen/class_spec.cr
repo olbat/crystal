@@ -641,7 +641,7 @@ describe "Code gen: class" do
         def f(arg)
         end
 
-        @a = ->f(String)
+        @a : Proc(String, Nil) = ->f(String)
       end
       ))
   end
@@ -744,5 +744,100 @@ describe "Code gen: class" do
       foo = Bar.new(42)
       foo.x
       )).to_i.should eq(42)
+  end
+
+  it "codegens virtual metaclass union bug (#2597)" do
+    run(%(
+
+      class Foo
+        def self.foo
+          1
+        end
+      end
+
+      class Foo1 < Foo
+        def self.foo
+          2
+        end
+      end
+
+      class Foo2 < Foo
+        def self.foo
+          3
+        end
+      end
+
+      class Bar
+        @foo : Foo.class
+
+        def initialize
+          @foo = if 1 == 1
+                   Foo1
+                 elsif 1 == 2
+                   Foo2
+                 else
+                   Foo
+                 end
+        end
+
+        def foo
+          @foo
+        end
+      end
+
+      Bar.new.foo.foo
+      )).to_i.should eq(2)
+  end
+
+  it "doesn't crash on #1216" do
+    codegen(%(
+      class A
+        def initialize(@ivar : Int32)
+          meth
+        end
+
+        def meth
+          r = self.class.new(5)
+          r.@ivar
+        end
+      end
+
+      A.new(6)
+      ))
+  end
+
+  it "doesn't crash on #1216 with pointerof" do
+    codegen(%(
+      class A
+        def initialize(@ivar : Int32)
+          meth
+        end
+
+        def meth
+          r = self.class.new(5)
+          pointerof(r.@ivar)
+        end
+      end
+
+      A.new(6)
+      ))
+  end
+
+  it "doesn't crash on #1216 (reduced)" do
+    codegen(%(
+      class Foo
+        def foo
+          crash.foo
+        end
+      end
+
+      def crash
+        x = Foo.allocate
+        x.foo
+        x
+      end
+
+      crash
+      ))
   end
 end

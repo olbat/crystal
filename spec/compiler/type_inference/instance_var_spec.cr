@@ -1659,10 +1659,10 @@ describe "Type inference: instance var" do
       end
       ))
 
-    foo = result.program.types["Foo"] as NonGenericClassType
+    foo = result.program.types["Foo"].as(NonGenericClassType)
     foo.instance_vars["@x"].type.should eq(result.program.int32)
 
-    bar = result.program.types["Bar"] as NonGenericClassType
+    bar = result.program.types["Bar"].as(NonGenericClassType)
     bar.instance_vars.empty?.should be_true
   end
 
@@ -1711,7 +1711,7 @@ describe "Type inference: instance var" do
       end
 
       Bar.new.x
-      )) { (types["Foo"] as GenericClassType).instantiate([int32] of TypeVar) }
+      )) { generic_class "Foo", int32 }
   end
 
   it "infers type from custom hash literal" do
@@ -1759,7 +1759,7 @@ describe "Type inference: instance var" do
       end
 
       Bar.new.x
-      )) { (types["Foo"] as GenericClassType).instantiate([int32, string] of TypeVar) }
+      )) { generic_class "Foo", int32, string }
   end
 
   it "infers type from custom array literal in generic" do
@@ -2220,7 +2220,7 @@ describe "Type inference: instance var" do
       end
 
       Foo.new.bar
-      )) { (types["Bar"] as GenericClassType).instantiate([int32] of TypeVar) }
+      )) { generic_class "Bar", int32 }
   end
 
   it "infers from generic class method that has type annotation, without instantiating" do
@@ -2371,7 +2371,7 @@ describe "Type inference: instance var" do
       end
 
       Baz.new.x
-      )) { (types["Bar"] as GenericClassType).instantiate([int32] of TypeVar) }
+      )) { generic_class "Bar", int32 }
   end
 
   it "guesses from new on abstract class" do
@@ -2674,6 +2674,395 @@ describe "Type inference: instance var" do
       "wrong number of arguments for 'Foo.new'"
   end
 
+  it "guesses inside macro if" do
+    assert_type(%(
+      {% if true %}
+        class Foo
+          def initialize
+            @x = 1
+          end
+
+          def x
+            @x
+          end
+        end
+      {% end %}
+
+      Foo.new.x
+      )) { int32 }
+  end
+
+  it "guesses inside macro expression" do
+    assert_type(%(
+      {{ "class Foo; def initialize; @x = 1; end; def x; @x; end; end".id }}
+
+      Foo.new.x
+      )) { int32 }
+  end
+
+  it "guesses inside macro for" do
+    assert_type(%(
+      {% for name in %w(Foo) %}
+        class {{name.id}}
+          def initialize
+            @x = 1
+          end
+
+          def x
+            @x
+          end
+        end
+      {% end %}
+
+      Foo.new.x
+      )) { int32 }
+  end
+
+  it "can't infer type from initializer" do
+    assert_error %(
+      class Foo
+        @x = 1 + 2
+
+        def x
+          @x
+        end
+      end
+
+      Foo.new.x
+      ),
+      "Can't infer the type of instance variable '@x' of Foo"
+  end
+
+  it "can't infer type from initializer in non-generic module" do
+    assert_error %(
+      module Moo
+        @x = 1 + 2
+
+        def x
+          @x
+        end
+      end
+
+      class Foo
+        include Moo
+      end
+
+      Foo.new.x
+      ),
+      "Can't infer the type of instance variable '@x' of Moo"
+  end
+
+  it "can't infer type from initializer in generic module type" do
+    assert_error %(
+      module Moo(T)
+        @x = 1 + 2
+
+        def x
+          @x
+        end
+      end
+
+      class Foo
+        include Moo(Int32)
+      end
+
+      Foo.new.x
+      ),
+      "Can't infer the type of instance variable '@x' of Moo(T)"
+  end
+
+  it "can't infer type from initializer in generic class type" do
+    assert_error %(
+      class Foo(T)
+        @x = 1 + 2
+
+        def x
+          @x
+        end
+      end
+
+      Foo(Int32).new.x
+      ),
+      "Can't infer the type of instance variable '@x' of Foo(T)"
+  end
+
+  it "infers type from self (#2575)" do
+    assert_type(%(
+      class Foo
+        def initialize
+          @x = self
+        end
+
+        def x
+          @x
+        end
+      end
+
+      Foo.new.x
+      )) { types["Foo"] }
+  end
+
+  it "infers type from self as virtual type (#2575)" do
+    assert_type(%(
+      class Foo
+        def initialize
+          @x = self
+        end
+
+        def x
+          @x
+        end
+      end
+
+      class Bar < Foo
+      end
+
+      Foo.new.x
+      )) { types["Foo"].virtual_type! }
+  end
+
+  it "declares as named tuple" do
+    assert_type(%(
+      class Foo
+        @x : NamedTuple(x: Int32, y: Char)
+
+        def initialize
+          a = {x: 1, y: 'a'}
+          @x = a
+        end
+
+        def x
+          @x
+        end
+      end
+
+      Foo.new.x
+      )) { named_tuple_of({"x": int32, "y": char}) }
+  end
+
+  it "doesn't complain in second part of #2575" do
+    assert_type(%(
+      class Foo
+        @a : Int32
+
+        def initialize
+          @a = 5
+        end
+
+        def initialize(b)
+          initialize
+        end
+
+        def a
+          @a
+        end
+      end
+
+      class Bar < Foo
+      end
+
+      Bar.new.a
+      )) { int32 }
+  end
+
+  it "guesses from as.(typeof(...))" do
+    assert_type(%(
+      class Foo
+        def initialize(x : Int32)
+          a = 1
+          @x = a.as(typeof(x))
+        end
+
+        def x
+          @x
+        end
+      end
+
+      Foo.new(1).x
+      )) { int32 }
+  end
+
+  it "guesses from as.(typeof(...)) in generic type" do
+    assert_type(%(
+      class Foo(T)
+        def initialize(x : Int32)
+          a = 1
+          @x = a.as(typeof(x))
+        end
+
+        def x
+          @x
+        end
+      end
+
+      Foo(Float64).new(1).x
+      )) { int32 }
+  end
+
+  it "errors if can't find lib call, before erroring on instance var (#2579)" do
+    assert_error %(
+      lib LibFoo
+      end
+
+      class Foo
+        def initialize
+          LibFoo.nope(out @foo)
+        end
+      end
+
+      Foo.new
+      ),
+      "undefined fun 'nope' for LibFoo"
+  end
+
+  it "errors when using Class (#2605)" do
+    assert_error %(
+      class Foo
+        def initialize(@class : Class)
+        end
+      end
+      ),
+      "can't use Class as the type of instance variable @class of Foo, use a more specific type"
+  end
+
+  it "errors when using Class in generic type" do
+    assert_error %(
+      class Foo(T)
+        def initialize(@class : Class)
+        end
+      end
+      ),
+      "can't use Class as the type of instance variable @class of Foo(T), use a more specific type"
+  end
+
+  it "doesn't error when using Class but specifying type" do
+    assert_type(%(
+      class Foo
+        @x : Foo.class
+
+        def initialize(@x : Class)
+        end
+
+        def x
+          @x
+        end
+      end
+
+      Foo.new(Foo).x
+      )) { types["Foo"].metaclass }
+  end
+
+  it "doesn't error when using generic because guessed elsewhere" do
+    assert_type(%(
+      class Foo
+        @x = Bar(Int32).new
+
+        def initialize
+        end
+
+        def x
+          @x = Bar.new(1)
+          @x
+        end
+      end
+
+      class Bar(T)
+        def initialize
+        end
+
+        def initialize(x : T)
+        end
+      end
+
+      Foo.new.x
+      )) { generic_class "Bar", int32 }
+  end
+
+  it "doesn't error when using generic in generic type because guessed elsewhere" do
+    assert_type(%(
+      class Foo(T)
+        @x = Bar(Int32).new
+
+        def initialize
+        end
+
+        def x
+          @x = Bar.new(1)
+          @x
+        end
+      end
+
+      class Bar(T)
+        def initialize
+        end
+
+        def initialize(x : T)
+        end
+      end
+
+      Foo(Int32).new.x
+      )) { generic_class "Bar", int32 }
+  end
+
+  %w(Object Reference).each do |type|
+    it "errors if declaring var in #{type}" do
+      assert_error %(
+        class #{type}
+          @x : Int32?
+        end
+        ),
+        "can't declare instance variables in #{type}"
+    end
+  end
+
+  %w(Value Number Int Float Int32).each do |type|
+    it "errors if declaring var in #{type}" do
+      assert_error %(
+        struct #{type}
+          @x : Int32?
+        end
+        ),
+        "can't declare instance variables in #{type}"
+    end
+  end
+
+  it "errors if declaring instance variable in module included in Object" do
+    assert_error %(
+      module Moo
+        @x : Int32?
+      end
+
+      class Object
+        include Moo
+      end
+      ),
+      "can't declare instance variables in Object"
+  end
+
+  it "errors if adds instance variable to Object via guess" do
+    assert_error %(
+      class Object
+        def foo(@foo : Int32)
+        end
+      end
+      ),
+      "can't declare instance variables in Object"
+  end
+
+  it "errors if adds instance variable to Object via guess via included module" do
+    assert_error %(
+      module Moo
+        def foo(@foo : Int32)
+        end
+      end
+
+      class Object
+        include Moo
+      end
+      ),
+      "can't declare instance variables in Object"
+  end
+
   # -----------------
   # ||| OLD SPECS |||
   # vvv           vvv
@@ -2693,7 +3082,7 @@ describe "Type inference: instance var" do
 
     mod = result.program
 
-    foo = mod.types["Foo"] as NonGenericClassType
+    foo = mod.types["Foo"].as(NonGenericClassType)
     foo.instance_vars["@x"].type.should eq(mod.int32)
   end
 
@@ -2708,7 +3097,7 @@ describe "Type inference: instance var" do
 
       Foo(Int32).new(1)
       ") do
-      foo = types["Foo"] as GenericClassType
+      foo = types["Foo"].as(GenericClassType)
       foo_i32 = foo.instantiate([int32] of TypeVar)
       foo_i32.lookup_instance_var("@x").type.should eq(int32)
       foo_i32
@@ -2730,7 +3119,7 @@ describe "Type inference: instance var" do
       end
 
       f") do
-      foo = types["Foo"] as GenericClassType
+      foo = types["Foo"].as(GenericClassType)
       foo_i32 = foo.instantiate([int32] of TypeVar)
       foo_i32.lookup_instance_var("@x").type.should eq(int32)
       foo_i32

@@ -24,11 +24,17 @@ module Crystal
     getter! requires : Set(String)
     getter! temp_var_counter : Int32
     getter! crystal_path : CrystalPath
-    getter! def_macros : Array(Def)
     getter! unions : Hash(Array(UInt64), Type)
     getter! file_modules : Hash(String, FileModule)
     getter! string_pool
     @flags : Set(String)?
+
+    # The cache directory where temporary files are placed.
+    setter cache_dir : String?
+
+    # Temporary files generates by macro runs that need to be
+    # deleted after compilation finishes.
+    getter! tempfiles : Array(String)
 
     # Here we store class var initializers and constants, in the
     # order that they are used. They will be initialized as soon
@@ -39,6 +45,9 @@ module Crystal
     # a recursive dependency.
     getter! class_var_and_const_being_typed
 
+    getter! argc : Const
+    getter! argv : Const
+
     def initialize
       super(self, self, "main")
 
@@ -47,7 +56,6 @@ module Crystal
       @requires = Set(String).new
       @temp_var_counter = 0
       @vars = MetaVars.new
-      @def_macros = [] of Def
       @splat_expansions = {} of UInt64 => Type
       @initialized_global_vars = Set(String).new
       @file_modules = {} of String => FileModule
@@ -58,6 +66,7 @@ module Crystal
       @string_pool = StringPool.new
       @class_var_and_const_initializers = [] of ClassVarInitializer | Const
       @class_var_and_const_being_typed = [] of MetaTypeVar | Const
+      @tempfiles = [] of String
 
       types = @types = {} of String => Type
 
@@ -106,6 +115,9 @@ module Crystal
       types["Tuple"] = tuple = @tuple = TupleType.new self, self, "Tuple", value, ["T"]
       tuple.allowed_in_generics = false
 
+      types["NamedTuple"] = named_tuple = @named_tuple = NamedTupleType.new self, self, "NamedTuple", value, ["T"]
+      named_tuple.allowed_in_generics = false
+
       types["StaticArray"] = static_array = @static_array = StaticArrayType.new self, self, "StaticArray", value, ["T", "N"]
       static_array.struct = true
       static_array.declare_instance_var("@buffer", Path.new("T"))
@@ -147,14 +159,17 @@ module Crystal
       proc.variadic = true
       proc.allowed_in_generics = false
 
+      types["Crystal"] = crystal_module = NonGenericModuleType.new self, self, "Crystal"
+      crystal_module.locations << Location.new(__LINE__ - 1, 0, __FILE__)
+
       argc_primitive = Primitive.new(:argc)
       argc_primitive.type = int32
 
       argv_primitive = Primitive.new(:argv)
       argv_primitive.type = pointer_of(pointer_of(uint8))
 
-      types["ARGC_UNSAFE"] = argc_unsafe = Const.new self, self, "ARGC_UNSAFE", argc_primitive
-      types["ARGV_UNSAFE"] = argv_unsafe = Const.new self, self, "ARGV_UNSAFE", argv_primitive
+      types["ARGC_UNSAFE"] = @argc = argc_unsafe = Const.new self, self, "ARGC_UNSAFE", argc_primitive
+      types["ARGV_UNSAFE"] = @argv = argv_unsafe = Const.new self, self, "ARGV_UNSAFE", argv_primitive
 
       # Make sure to initialize ARGC and ARGV as soon as the program starts
       class_var_and_const_initializers << argc_unsafe
@@ -170,11 +185,55 @@ module Crystal
       @macro_expander = MacroExpander.new self
       @nil_var = Var.new("<nil_var>", nil_t)
 
-      define_primitives
+      define_crystal_constants
     end
 
     private def crystal_path
       @crystal_path ||= CrystalPath.new(target_triple: target_machine.triple)
+    end
+
+    private def define_crystal_constants
+      types["Crystal"] = @crystal = crystal = NonGenericModuleType.new self, self, "Crystal"
+      crystal.locations << Location.new(__LINE__ - 1, 0, __FILE__)
+
+      tag, sha = Crystal::Config.tag_and_sha
+
+      if sha
+        define_crystal_string_constant "BUILD_COMMIT", sha
+      else
+        define_crystal_nil_constant "BUILD_COMMIT"
+      end
+
+      define_crystal_string_constant "BUILD_DATE", Crystal::Config.date
+      define_crystal_string_constant "CACHE_DIR", CacheDir.instance.dir
+      define_crystal_string_constant "DEFAULT_PATH", Crystal::Config.path
+      define_crystal_string_constant "DESCRIPTION", Crystal::Config.description
+      define_crystal_string_constant "PATH", Crystal::CrystalPath.default_path
+      define_crystal_string_constant "VERSION", tag
+    end
+
+    private def define_crystal_string_constant(name, value)
+      define_crystal_constant name, StringLiteral.new(value).tap(&.set_type(string))
+    end
+
+    private def define_crystal_nil_constant(name)
+      define_crystal_constant name, NilLiteral.new.tap(&.set_type(self.nil))
+    end
+
+    private def define_crystal_constant(name, value)
+      crystal.types[name] = const = Const.new self, crystal, name, value
+      const.locations << Location.new(0, 0, __FILE__)
+      const.initialized = true
+    end
+
+    def new_tempfile(basename)
+      filename = if cache_dir = @cache_dir
+                   File.join(cache_dir, basename)
+                 else
+                   Crystal.tempfile(basename)
+                 end
+      tempfiles << filename
+      filename
     end
 
     def add_def(node : Def)
@@ -248,15 +307,30 @@ module Crystal
     end
 
     def tuple_of(types)
-      type_vars = types.map { |type| type as TypeVar }
+      type_vars = types.map { |type| type.as(TypeVar) }
       tuple.instantiate(type_vars)
     end
 
+    def named_tuple_of(hash : Hash(String, Type))
+      names_and_types = hash.map { |k, v| {k, v.as(Type)} }
+      named_tuple_of(names_and_types)
+    end
+
+    def named_tuple_of(names_and_types : Array)
+      named_tuple.instantiate_named_args(names_and_types)
+    end
+
     def nilable(type)
+      # Nil | Nil # => Nil
+      return self.nil if type == self.nil
+
       union_of self.nil, type
     end
 
     def union_of(type1, type2)
+      # T | T # => T
+      return type1 if type1 == type2
+
       union_of([type1, type2] of Type).not_nil!
     end
 
@@ -320,7 +394,7 @@ module Crystal
     end
 
     def fun_of(types : Array)
-      type_vars = types.map { |type| type as TypeVar }
+      type_vars = types.map { |type| type.as(TypeVar) }
       proc.instantiate(type_vars)
     end
 
@@ -361,7 +435,7 @@ module Crystal
 
     {% for name in %w(object no_return value number reference void nil bool char int int8 int16 int32 int64
                      uint8 uint16 uint32 uint64 float float32 float64 string symbol pointer array static_array
-                     exception tuple proc enum range regex) %}
+                     exception tuple named_tuple proc enum range regex crystal) %}
       def {{name.id}}
         @{{name.id}}.not_nil!
       end

@@ -1,68 +1,11 @@
 module Crystal
   class Program
-    def push_def_macro(a_def)
-      def_macros << a_def
-    end
-
     def expand_macro(a_macro : Macro, call : Call, scope : Type, type_lookup : Type?)
       macro_expander.expand a_macro, call, scope, type_lookup || scope
     end
 
     def expand_macro(node : ASTNode, scope : Type, type_lookup : Type?, free_vars = nil)
       macro_expander.expand node, scope, type_lookup || scope, free_vars
-    end
-
-    def expand_macro_defs
-      until def_macros.empty?
-        def_macro = def_macros.pop
-        expand_macro_def def_macro
-      end
-    end
-
-    def expand_macro_def(target_def)
-      the_macro = Macro.new("macro_#{target_def.object_id}", [] of Arg, target_def.body).at(target_def)
-
-      owner = target_def.owner
-
-      case owner
-      when VirtualType
-        owner = owner.base_type
-      when VirtualMetaclassType
-        owner = owner.instance_type.base_type.metaclass
-      end
-
-      begin
-        expanded_macro = @program.expand_macro target_def.body, owner, owner
-      rescue ex : Crystal::Exception
-        target_def.raise "expanding macro", ex
-      end
-
-      vars = MetaVars.new
-      target_def.args.each do |arg|
-        vars[arg.name] = MetaVar.new(arg.name, arg.type)
-      end
-      vars["self"] = MetaVar.new("self", owner) unless owner.is_a?(Program)
-      target_def.vars = vars
-
-      arg_names = target_def.args.map(&.name)
-
-      generated_nodes = parse_macro_source(expanded_macro, the_macro, target_def, arg_names.to_set) do |parser|
-        parser.parse_to_def(target_def)
-      end
-
-      expected_type = target_def.type
-
-      type_visitor = MainVisitor.new(@program, vars, target_def)
-      type_visitor.scope = owner
-      type_visitor.types << owner
-      generated_nodes.accept type_visitor
-
-      target_def.body = generated_nodes
-      target_def.bind_to generated_nodes
-
-      unless target_def.type.covariant?(expected_type)
-        target_def.raise "expected '#{target_def.name}' to return #{expected_type}, not #{target_def.type}"
-      end
     end
 
     def parse_macro_source(expanded_macro, the_macro, node, vars, inside_def = false, inside_type = false, inside_exp = false)
@@ -142,8 +85,16 @@ module Crystal
       # the subsequent times will make program execution faster.
       compiler.release = true
 
+      # Don't cleanup old directories after compiling: it might happen
+      # that in doing so we remove the directory associated with the current
+      # compilation (for example if we have more than 10 macro runs, the current
+      # directory will be the oldest).
+      compiler.cleanup = false
+
       safe_filename = filename.gsub(/[^a-zA-Z\_\-\.]/, "_")
-      tempfile_path = Crystal.tempfile("macro-run-#{safe_filename}")
+
+      tempfile_path = @mod.new_tempfile("macro-run-#{safe_filename}")
+
       compiler.compile Compiler::Source.new(filename, source), tempfile_path
 
       tempfile_path
@@ -152,11 +103,12 @@ module Crystal
     class MacroVisitor < Visitor
       getter last : ASTNode
       getter yields : Hash(String, ASTNode)?
-      property free_vars : Hash(String, Type)?
+      property free_vars : Hash(String, TypeVar)?
 
       def self.new(expander, mod, scope : Type, type_lookup : Type, a_macro : Macro, call)
         vars = {} of String => ASTNode
         splat_index = a_macro.splat_index
+        double_splat = a_macro.double_splat
 
         # Process regular args
         # (skip the splat index because we need to create an array for it)
@@ -167,13 +119,30 @@ module Crystal
         # Gather splat args into an array
         if splat_index
           splat_arg = a_macro.args[splat_index]
-          splat_elements = if splat_index < call.args.size
-                             splat_size = Splat.size(a_macro, call.args)
-                             call.args[splat_index, splat_size]
-                           else
-                             [] of ASTNode
-                           end
-          vars[splat_arg.name] = ArrayLiteral.new(splat_elements)
+          unless splat_arg.name.empty?
+            splat_elements = if splat_index < call.args.size
+                               splat_size = Splat.size(a_macro, call.args)
+                               call.args[splat_index, splat_size]
+                             else
+                               [] of ASTNode
+                             end
+            vars[splat_arg.name] = TupleLiteral.new(splat_elements)
+          end
+        end
+
+        # The double splat argument
+        if double_splat
+          named_tuple_elems = [] of NamedTupleLiteral::Entry
+          if named_args = call.named_args
+            named_args.each do |named_arg|
+              # Skip an argument that's already there as a positional argument
+              next if a_macro.args.any? &.external_name.==(named_arg.name)
+
+              named_tuple_elems << NamedTupleLiteral::Entry.new(named_arg.name, named_arg.value)
+            end
+          end
+
+          vars[double_splat.name] = NamedTupleLiteral.new(named_tuple_elems)
         end
 
         # Process default values
@@ -189,7 +158,9 @@ module Crystal
 
         # The named arguments
         call.named_args.try &.each do |named_arg|
-          vars[named_arg.name] = named_arg.value
+          arg = a_macro.args.find { |arg| arg.external_name == named_arg.name }
+          arg_name = arg.try(&.name) || named_arg.name
+          vars[arg_name] = named_arg.value
         end
 
         # The block arg
@@ -283,29 +254,17 @@ module Crystal
         exp = @last
         case exp
         when ArrayLiteral
-          visit_macro_for_single_iterable node, exp
+          visit_macro_for_array_like node, exp
         when TupleLiteral
-          visit_macro_for_single_iterable node, exp
+          visit_macro_for_array_like node, exp
         when HashLiteral
-          key_var = node.vars[0]
-          value_var = node.vars[1]?
-          index_var = node.vars[2]?
-
-          exp.entries.each_with_index do |entry, i|
-            @vars[key_var.name] = entry.key
-            if value_var
-              @vars[value_var.name] = entry.value
-            end
-            if index_var
-              @vars[index_var.name] = NumberLiteral.new(i)
-            end
-
-            node.body.accept self
+          visit_macro_for_hash_like(node, exp, exp.entries) do |entry|
+            {entry.key, entry.value}
           end
-
-          @vars.delete key_var.name
-          @vars.delete value_var.name if value_var
-          @vars.delete index_var.name if index_var
+        when NamedTupleLiteral
+          visit_macro_for_hash_like(node, exp, exp.entries) do |entry|
+            {MacroId.new(entry.key), entry.value}
+          end
         when RangeLiteral
           exp.from.accept self
           from = @last
@@ -341,6 +300,15 @@ module Crystal
 
           @vars.delete element_var.name
           @vars.delete index_var.name if index_var
+        when TypeNode
+          type = exp.type
+          unless type.is_a?(NamedTupleInstanceType)
+            exp.raise "can't interate TypeNode of type #{type}, only named tuple types"
+          end
+
+          visit_macro_for_hash_like(node, exp, type.names_and_types) do |name_and_type|
+            {MacroId.new(name_and_type[0]), TypeNode.new(name_and_type[1])}
+          end
         else
           node.exp.raise "for expression must be an array, hash or tuple literal, not #{exp.class_desc}:\n\n#{exp}"
         end
@@ -348,7 +316,7 @@ module Crystal
         false
       end
 
-      def visit_macro_for_single_iterable(node, exp)
+      def visit_macro_for_array_like(node, exp)
         element_var = node.vars[0]
         index_var = node.vars[1]?
 
@@ -361,6 +329,26 @@ module Crystal
         end
 
         @vars.delete element_var.name
+        @vars.delete index_var.name if index_var
+      end
+
+      def visit_macro_for_hash_like(node, exp, entries)
+        key_var = node.vars[0]
+        value_var = node.vars[1]?
+        index_var = node.vars[2]?
+
+        entries.each_with_index do |entry, i|
+          key, value = yield entry, value_var
+
+          @vars[key_var.name] = key
+          @vars[value_var.name] = value if value_var
+          @vars[index_var.name] = NumberLiteral.new(i) if index_var
+
+          node.body.accept self
+        end
+
+        @vars.delete key_var.name
+        @vars.delete value_var.name if value_var
         @vars.delete index_var.name if index_var
       end
 
@@ -477,7 +465,7 @@ module Crystal
       end
 
       def resolve(node : Path)
-        if node.names.size == 1 && (match = @free_vars.try &.[node.names.first])
+        if node.names.size == 1 && (match = @free_vars.try &.[node.names.first]?)
           matched_type = match
         else
           matched_type = @type_lookup.lookup_type(node)
@@ -713,6 +701,14 @@ module Crystal
         @last =
           HashLiteral.new(node.entries.map do |entry|
             HashLiteral::Entry.new(accept(entry.key), accept(entry.value))
+          end).at(node)
+        false
+      end
+
+      def visit(node : NamedTupleLiteral)
+        @last =
+          NamedTupleLiteral.new(node.entries.map do |entry|
+            NamedTupleLiteral::Entry.new(entry.key, accept(entry.value))
           end).at(node)
         false
       end

@@ -29,7 +29,7 @@ module Crystal
     end
 
     # An opaque id of every type. 0 for Nil, non zero for others, so we can
-    # sort types by opaque_id and have Nil in the begining.
+    # sort types by opaque_id and have Nil in the beginning.
     def opaque_id
       self.is_a?(NilType) ? 0_u64 : object_id
     end
@@ -161,6 +161,17 @@ module Crystal
 
     def has_in_type_vars?(type)
       false
+    end
+
+    def allows_instance_vars?
+      case self
+      when program.object, program.value,
+           program.number, program.int, program.float,
+           PrimitiveType, program.reference
+        false
+      else
+        true
+      end
     end
 
     def lookup_new_in_ancestors=(value)
@@ -522,11 +533,17 @@ module Crystal
     end
   end
 
+  record NamedArgumentType, name : String, type : Type do
+    def self.from_args(named_args : Array(NamedArgument)?)
+      named_args.try &.map { |named_arg| new(named_arg.name, named_arg.value.type) }
+    end
+  end
+
   record CallSignature,
     name : String,
     arg_types : Array(Type),
     block : Block?,
-    named_args : Array(NamedArgument)?
+    named_args : Array(NamedArgumentType)?
 
   module MatchesLookup
     def lookup_first_def(name, block)
@@ -701,7 +718,7 @@ module Crystal
         if existing_defs = defs[a_def.name]?
           existing = existing_defs.first?
           if existing
-            existing = existing.def as External
+            existing = existing.def.as(External)
             unless existing.compatible_with?(a_def)
               a_def.raise "fun redefinition with different signature (was #{existing})"
             end
@@ -733,7 +750,7 @@ module Crystal
     def_object_id : UInt64,
     arg_types : Array(Type),
     block_type : Type?,
-    named_args : Array({String, Type})?
+    named_args : Array(NamedArgumentType)?
 
   module DefInstanceContainer
     def def_instances
@@ -914,6 +931,10 @@ module Crystal
 
     def module?
       true
+    end
+
+    def known_instance_vars
+      @known_instance_vars ||= Set(String).new
     end
 
     def declare_instance_var(name, var_type : Type)
@@ -1323,8 +1344,12 @@ module Crystal
 
   module GenericType
     getter type_vars : Array(String)
+
     property variadic : Bool
     @variadic = false
+
+    property double_variadic : Bool
+    @double_variadic = false
 
     def generic_types
       @generic_types ||= {} of Array(TypeVar) => Type
@@ -1343,7 +1368,7 @@ module Crystal
           index.upto(type_vars.size - 1) do |second_index|
             types << type_vars[second_index]
           end
-          tuple_type = program.tuple.instantiate(types) as TupleInstanceType
+          tuple_type = program.tuple.instantiate(types).as(TupleInstanceType)
           instance_type_vars[name] = tuple_type.var
         else
           type_var = type_vars[index]
@@ -1470,7 +1495,11 @@ module Crystal
       @including_types
     end
 
-    getter declared_instance_var : Hash(String, Array(TypeVar))?
+    def known_instance_vars
+      @known_instance_vars ||= Set(String).new
+    end
+
+    getter declared_instance_vars : Hash(String, Array(TypeVar))?
 
     def declare_instance_var(name, type_var : TypeVar)
       declare_instance_var(name, [type_var] of TypeVar)
@@ -1522,6 +1551,10 @@ module Crystal
 
     def new_generic_instance(program, generic_type, type_vars)
       GenericClassInstanceType.new program, generic_type, type_vars
+    end
+
+    def known_instance_vars
+      @known_instance_vars ||= Set(String).new
     end
 
     getter declared_instance_vars : Hash(String, Array(TypeVar))?
@@ -1879,10 +1912,27 @@ module Crystal
 
     private def tuple_indexer(indexers, index)
       indexers[index] ||= begin
-        indexer = Def.new("[]", [Arg.new("index")], TupleIndexer.new(index))
+        body = index == -1 ? NilLiteral.new : TupleIndexer.new(index)
+        indexer = Def.new("[]", [Arg.new("index")], body)
         indexer.owner = self
         indexer
       end
+    end
+
+    def implements?(other : Type)
+      return true if self == other
+
+      if other.is_a?(TupleInstanceType)
+        return false unless self.size == other.size
+
+        tuple_types.zip(other.tuple_types) do |self_tuple_type, other_tuple_type|
+          return false unless self_tuple_type.implements?(other_tuple_type)
+        end
+
+        return true
+      end
+
+      super
     end
 
     def var
@@ -1914,6 +1964,120 @@ module Crystal
       @tuple_types.each_with_index do |tuple_type, i|
         io << ", " if i > 0
         tuple_type.to_s_with_options(io, skip_union_parens: true)
+      end
+      io << "}"
+    end
+
+    def type_desc
+      "tuple"
+    end
+  end
+
+  class NamedTupleType < GenericClassType
+    def initialize(program, container, name, superclass, type_vars, add_subclass = true)
+      super
+      @struct = true
+      @double_variadic = true
+      @instantiations = {} of Array(Tuple(String, Type)) => Type
+    end
+
+    def instantiate(type_vars)
+      raise "can't instantiate NamedTuple type yet"
+    end
+
+    def instantiate_named_args(names_and_types : Array(Tuple(String, Type)))
+      @instantiations[names_and_types] ||= NamedTupleInstanceType.new(program, names_and_types)
+    end
+
+    def new_generic_instance(program, generic_type, type_vars)
+      raise "Bug: NamedTupleType#new_generic_instance shouldn't be invoked"
+    end
+
+    def type_desc
+      "named tuple"
+    end
+  end
+
+  class NamedTupleInstanceType < GenericClassInstanceType
+    getter names_and_types
+
+    def initialize(program, @names_and_types : Array(Tuple(String, Type)))
+      generic_nest = 1 + (@names_and_types.empty? ? 0 : @names_and_types.max_of(&.[1].generic_nest))
+      var = Var.new("T", self)
+      var.bind_to var
+      super(program, program.named_tuple, {"T" => var} of String => ASTNode, generic_nest)
+    end
+
+    def name_index(name)
+      @names_and_types.index &.[0].==(name)
+    end
+
+    def name_type(name)
+      @names_and_types.find(&.[0].==(name)).not_nil![1]
+    end
+
+    def tuple_indexer(index)
+      indexers = @tuple_indexers ||= {} of Int32 => Def
+      tuple_indexer(indexers, index)
+    end
+
+    private def tuple_indexer(indexers, index)
+      indexers[index] ||= begin
+        body = index == -1 ? NilLiteral.new : TupleIndexer.new(index)
+        indexer = Def.new("[]", [Arg.new("index")], body)
+        indexer.owner = self
+        indexer
+      end
+    end
+
+    def implements?(other)
+      if other.is_a?(NamedTupleInstanceType)
+        return nil unless self.size == other.size
+
+        self_names_and_types = self.names_and_types.sort_by &.[0]
+        other_names_and_types = other.names_and_types.sort_by &.[0]
+
+        self_names_and_types.zip(other_names_and_types) do |self_name_and_type, other_name_and_type|
+          return nil unless self_name_and_type[0] == other_name_and_type[0]
+          return nil unless self_name_and_type[1].implements?(other_name_and_type[1])
+        end
+
+        self
+      else
+        super
+      end
+    end
+
+    def size
+      names_and_types.size
+    end
+
+    def var
+      type_vars["T"]
+    end
+
+    def primitive_like?
+      false
+    end
+
+    def reference_like?
+      false
+    end
+
+    def passed_by_value?
+      true
+    end
+
+    def allocated?
+      true
+    end
+
+    def to_s_with_options(io : IO, skip_union_parens : Bool = false, generic_args : Bool = true)
+      io << "{"
+      @names_and_types.each_with_index do |name_and_type, i|
+        io << ", " if i > 0
+        io << name_and_type[0] << ": "
+        name_and_type[1].to_s_with_options(io, skip_union_parens: true)
       end
       io << "}"
     end
@@ -2315,8 +2479,7 @@ module Crystal
   end
 
   class CStructType < CStructOrUnionType
-    property packed : Bool
-    @packed = false
+    property packed = false
 
     def add_var(var)
       @vars[var.name] = var
@@ -2674,7 +2837,7 @@ module Crystal
     end
 
     def fun_type
-      @union_types.last.remove_typedef as FunInstanceType
+      @union_types.last.remove_typedef.as(FunInstanceType)
     end
 
     def to_s_with_options(io : IO, skip_union_parens : Bool = false, generic_args : Bool = true)
@@ -2696,7 +2859,7 @@ module Crystal
     end
 
     def pointer_type
-      @union_types.last.remove_typedef as PointerInstanceType
+      @union_types.last.remove_typedef.as(PointerInstanceType)
     end
 
     def to_s_with_options(io : IO, skip_union_parens : Bool = false, generic_args : Bool = true)
@@ -2840,7 +3003,7 @@ module Crystal
     end
 
     def reference_like?
-      true
+      !struct?
     end
 
     def each_concrete_type

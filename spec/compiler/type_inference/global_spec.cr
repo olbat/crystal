@@ -4,7 +4,7 @@ describe "Global inference" do
   it "infers type of global assign" do
     node = parse "$foo = 1"
     result = infer_type node
-    mod, node = result.program, result.node as Assign
+    mod, node = result.program, result.node.as(Assign)
 
     node.type.should eq(mod.int32)
     node.target.type.should eq(mod.int32)
@@ -14,10 +14,10 @@ describe "Global inference" do
   it "infers type of global assign with union" do
     nodes = parse "$foo = 1; $foo = 'a'"
     result = infer_type nodes
-    mod, node = result.program, result.node as Expressions
+    mod, node = result.program, result.node.as(Expressions)
 
-    (node[0] as Assign).target.type.should eq(mod.union_of(mod.int32, mod.char))
-    (node[1] as Assign).target.type.should eq(mod.union_of(mod.int32, mod.char))
+    node[0].as(Assign).target.type.should eq(mod.union_of(mod.int32, mod.char))
+    node[1].as(Assign).target.type.should eq(mod.union_of(mod.int32, mod.char))
   end
 
   it "errors when reading undefined global variables" do
@@ -175,6 +175,13 @@ describe "Global inference" do
       )) { tuple_of([int32, string]) }
   end
 
+  it "infers type from named tuple literal" do
+    assert_type(%(
+      $x = {x: 1, y: "foo"}
+      $x
+      )) { named_tuple_of({"x": int32, "y": string}) }
+  end
+
   it "infers type from new expression" do
     assert_type(%(
       class Foo
@@ -197,7 +204,7 @@ describe "Global inference" do
       $x = Foo.new
       $x
       ),
-      "Can't infer the type of global variable '$x'"
+      "can't use Foo(T) as the type of global variable $x, use a more specific type"
   end
 
   it "infers type from new expression of generic" do
@@ -207,7 +214,7 @@ describe "Global inference" do
 
       $x = Foo(Int32).new
       $x
-      )) { (types["Foo"] as GenericClassType).instantiate([int32] of TypeVar) }
+      )) { generic_class "Foo", int32 }
   end
 
   it "infers type from as" do
@@ -219,6 +226,17 @@ describe "Global inference" do
       $x = foo as Int32
       $x
       )) { int32 }
+  end
+
+  it "infers type from as?" do
+    assert_type(%(
+      def foo
+        1
+      end
+
+      $x = foo.as?(Int32)
+      $x
+      )) { nilable int32 }
   end
 
   it "infers type from static array type declaration" do
@@ -393,6 +411,16 @@ describe "Global inference" do
       )) { nilable fun_of(int32, int32) }
   end
 
+  it "infers from block argument without restriction" do
+    assert_type(%(
+      def foo(&block)
+        $x = block
+      end
+
+      $x
+      )) { nilable fun_of(void) }
+  end
+
   it "infers type from !" do
     assert_type(%(
       $x = !1
@@ -534,7 +562,7 @@ describe "Global inference" do
       $x = Foo(Int32).new
       $x = Foo(typeof(foo)).new
       $x
-      )) { (types["Foo"] as GenericClassType).instantiate([int32] of TypeVar) }
+      )) { generic_class "Foo", int32 }
   end
 
   it "infers type of global reference" do
@@ -640,5 +668,23 @@ describe "Global inference" do
       $x, $y = Bar.method
       $x
       )) { int32 }
+  end
+
+  it "expands global var with declaration (#2564)" do
+    assert_type(%(
+      $x : Bool = 1 <= 2 <= 3
+      $x
+      )) { bool }
+  end
+
+  it "errors when using Class (#2605)" do
+    assert_error %(
+      class Foo
+        def foo(klass : Class)
+          $class = klass
+        end
+      end
+      ),
+      "can't use Class as the type of global variable $class, use a more specific type"
   end
 end
